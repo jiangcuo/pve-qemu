@@ -43,7 +43,6 @@ endif
 	    --localstatedir=/var \
 	    --prefix=/usr \
 	    --sysconfdir=/etc \
-	    --target-list=$(HOST_CPU)-softmmu,aarch64-softmmu \
 	    --with-suffix="kvm" \
 	    --with-pkgversion="${DEB_SOURCE}_${DEB_VERSION_UPSTREAM_REVISION}" \
 	    --audio-drv-list="alsa" \
