@@ -23,10 +23,10 @@ Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
  5 files changed, 14 insertions(+), 3 deletions(-)
 
 diff --git a/block/backup.c b/block/backup.c
-index 3dc955f625..ac5bd81338 100644
+index 1963e47ab9..fe69723ada 100644
 --- a/block/backup.c
 +++ b/block/backup.c
-@@ -430,7 +430,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
+@@ -434,7 +434,7 @@ BlockJob *backup_job_create(const char *job_id, BlockDriverState *bs,
      }
  
      cbw = bdrv_cbw_append(bs, target, filter_node_name, discard_source,
@@ -36,10 +36,10 @@ index 3dc955f625..ac5bd81338 100644
          goto error;
      }
 diff --git a/block/copy-before-write.c b/block/copy-before-write.c
-index 4a8c5bdb62..9ca5ec5e5c 100644
+index 47b3cdd09f..bba58326d7 100644
 --- a/block/copy-before-write.c
 +++ b/block/copy-before-write.c
-@@ -555,6 +555,7 @@ BlockDriverState *bdrv_cbw_append(BlockDriverState *source,
+@@ -546,6 +546,7 @@ BlockDriverState *bdrv_cbw_append(BlockDriverState *source,
                                    BlockDriverState *target,
                                    const char *filter_node_name,
                                    bool discard_source,
@@ -47,7 +47,7 @@ index 4a8c5bdb62..9ca5ec5e5c 100644
                                    BlockCopyState **bcs,
                                    Error **errp)
  {
-@@ -573,6 +574,7 @@ BlockDriverState *bdrv_cbw_append(BlockDriverState *source,
+@@ -564,6 +565,7 @@ BlockDriverState *bdrv_cbw_append(BlockDriverState *source,
      }
      qdict_put_str(opts, "file", bdrv_get_node_name(source));
      qdict_put_str(opts, "target", bdrv_get_node_name(target));
@@ -68,10 +68,10 @@ index 01af0cd3c4..dc6cafe7fa 100644
                                    Error **errp);
  void bdrv_cbw_drop(BlockDriverState *bs);
 diff --git a/blockdev.c b/blockdev.c
-index ce3fef924c..5ae1dde73c 100644
+index 1054a69279..cbe224387b 100644
 --- a/blockdev.c
 +++ b/blockdev.c
-@@ -2729,6 +2729,9 @@ static BlockJob *do_backup_common(BackupCommon *backup,
+@@ -2654,6 +2654,9 @@ static BlockJob *do_backup_common(BackupCommon *backup,
          if (backup->x_perf->has_max_chunk) {
              perf.max_chunk = backup->x_perf->max_chunk;
          }
@@ -82,10 +82,10 @@ index ce3fef924c..5ae1dde73c 100644
  
      if ((backup->sync == MIRROR_SYNC_MODE_BITMAP) ||
 diff --git a/qapi/block-core.json b/qapi/block-core.json
-index 33e7e3c090..58fd637e86 100644
+index edbf6e78b9..6e7ee87633 100644
 --- a/qapi/block-core.json
 +++ b/qapi/block-core.json
-@@ -1757,11 +1757,16 @@
+@@ -1790,11 +1790,16 @@
  #     it should not be less than job cluster size which is calculated
  #     as maximum of target image cluster size and 64k.  Default 0.
  #
