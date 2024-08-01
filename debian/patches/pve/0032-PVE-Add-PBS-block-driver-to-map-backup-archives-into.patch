@@ -368,7 +368,7 @@ index 6de51c34cb..3bc039f60f 100644
  summary_info += {'libdaxctl support': libdaxctl}
  summary_info += {'libudev':           libudev}
 diff --git a/qapi/block-core.json b/qapi/block-core.json
-index e49c7b5bc9..fc32ff9957 100644
+index d05fffce1d..e7cf3d94f3 100644
 --- a/qapi/block-core.json
 +++ b/qapi/block-core.json
 @@ -3457,6 +3457,7 @@

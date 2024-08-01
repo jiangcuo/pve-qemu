@@ -1,3 +1,44 @@
+pve-qemu-kvm (9.0.2-1) bookworm; urgency=medium
+
+  * update submodule and patches to QEMU 9.0.2. While our version had most
+    stable fixes included already, there are new fixes for VirtIO and VGA
+    display screen blanking (#4786)
+
+  * backport fix for a regression with the LSI-53c895a controller and one for
+    the boot order getting ignored for USB storage
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 29 Jul 2024 18:59:40 +0200
+
+pve-qemu-kvm (9.0.0-6) bookworm; urgency=medium
+
+  * fix a regression in the zeroinit block driver that prevented importing and
+    cloning disks to RBD storages which are not using the krbd setting
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 08 Jul 2024 16:11:15 +0200
+
+pve-qemu-kvm (9.0.0-5) bookworm; urgency=medium
+
+  * backport fix for CVE-2024-4467 to prevent malicious qcow2 image files from
+    already causing bad effects if being queried via 'qemu-img info'. For
+    Proxmox VE, this is an additional safe guard, as currently it directly
+    creates and manages the qcow2 images used by VMs and does not allow
+    unprivileged users to import them
+
+  * fix #4726: code cleanup: avoid superfluous check in vma backup code
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 03 Jul 2024 13:13:35 +0200
+
+pve-qemu-kvm (9.0.0-4) bookworm; urgency=medium
+
+  * fix crash after saving a snapshot without including VM state when a VirtIO
+    block device with iothread is configured.
+
+  * fix edge case in error handling when opening a block device from PBS fails
+
+  * minor code cleanup in backup code
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 01 Jul 2024 11:26:11 +0200
+
 pve-qemu-kvm (9.0.0-3) bookworm; urgency=medium
 
   * fix crash when doing resize after hotplugging a disk using io_uring
