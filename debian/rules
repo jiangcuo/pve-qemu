@@ -35,7 +35,7 @@ endif
 ifneq "$(wildcard /usr/share/misc/config.guess)" ""
 	cp -f /usr/share/misc/config.guess config.guess
 endif
-
+	echo "usr/bin/qemu-system-${HOST_CPU} usr/bin/kvm" >> debian/pve-qemu-kvm.links
 	# guest-agent is only required for guest systems
 	./configure \
 	    --disable-download \
