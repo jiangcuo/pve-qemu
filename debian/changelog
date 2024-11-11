@@ -1,3 +1,11 @@
+pve-qemu-kvm (9.1.0) UNRELEASED; urgency=medium
+
+  * Update qemu to 20241111 
+
+  * Support loongarch lbt in VM
+
+ -- Jiangcuo <jiangcuo@bingsin.com>  Mon, 11 Nov 2024 17:47:07 +0800
+
 pve-qemu-kvm (9.0.2-3) bookworm; urgency=medium
 
   * pick up fix for VirtIO PCI regressions
