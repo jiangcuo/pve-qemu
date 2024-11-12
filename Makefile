@@ -36,7 +36,6 @@ PC_BIOS_FW_PURGE_LIST_IN = \
 	.*[a-zA-Z0-9]\.dts \
 	qemu_vga.ndrv \
 	slof.bin \
-	opensbi-riscv.*-generic-fw_dynamic.bin \
 
 BLOB_PURGE_SED_CMDS = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "/$(FILE)/d")
 BLOB_PURGE_FILTER = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "$(FILE)")
