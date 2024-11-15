@@ -22,6 +22,24 @@ ifeq ($(shell test -f "$(SRCDIR)/configure" && echo 1 || echo 0), 0)
 	cd $(SRCDIR); meson subprojects download
 endif
 
+PC_BIOS_FW_PURGE_LIST_IN = \
+	hppa-firmware.img \
+	hppa-firmware64.img \
+	openbios-ppc \
+	openbios-sparc32 \
+	openbios-sparc64 \
+	palcode-clipper \
+	s390-ccw.img \
+	s390-netboot.img \
+	u-boot.e500 \
+	.*[a-zA-Z0-9]\.dtb \
+	.*[a-zA-Z0-9]\.dts \
+	qemu_vga.ndrv \
+	slof.bin \
+
+BLOB_PURGE_SED_CMDS = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "/$(FILE)/d")
+BLOB_PURGE_FILTER = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "$(FILE)")
+
 $(BUILDDIR): submodule
 	# check if qemu/ was used for a build
 	# if so, please run 'make distclean' in the submodule and try again
@@ -30,6 +48,8 @@ $(BUILDDIR): submodule
 	cp -a $(SRCDIR) $@.tmp
 	cp -a debian $@.tmp/debian
 	rm -rf $@.tmp/roms/edk2 # packaged separately
+	find $@.tmp/pc-bios -type f | grep $(BLOB_PURGE_FILTER) | xargs rm -f
+	sed -i $(BLOB_PURGE_SED_CMDS) $@.tmp/pc-bios/meson.build
 	echo "git clone git://git.proxmox.com/git/pve-qemu.git\\ngit checkout $(GITVERSION)" > $@.tmp/debian/SOURCE
 	mv $@.tmp $@
 
