@@ -25,18 +25,6 @@ Signed-off-by: Fiona Ebner <f.ebner@proxmox.com>
  6 files changed, 117 insertions(+)
  create mode 100644 migration/pbs-state.c
 
-diff --git a/include/migration/misc.h b/include/migration/misc.h
-index bfadc5613b..e2e51fcf6b 100644
---- a/include/migration/misc.h
-+++ b/include/migration/misc.h
-@@ -111,4 +111,7 @@ bool migration_in_bg_snapshot(void);
- /* migration/block-dirty-bitmap.c */
- void dirty_bitmap_mig_init(void);
- 
-+/* migration/pbs-state.c */
-+void pbs_state_mig_init(void);
-+
- #endif
 diff --git a/migration/meson.build b/migration/meson.build
 index 4b0c4f0f51..d039797132 100644
 --- a/migration/meson.build
@@ -57,18 +45,6 @@ index 4b0c4f0f51..d039797132 100644
    'postcopy-ram.c',
    'savevm.c',
    'savevm-async.c',
-diff --git a/migration/migration.c b/migration/migration.c
-index ae2be31557..fab4c20ee4 100644
---- a/migration/migration.c
-+++ b/migration/migration.c
-@@ -263,6 +263,7 @@ void migration_object_init(void)
- 
-     ram_mig_init();
-     dirty_bitmap_mig_init();
-+    pbs_state_mig_init();
- }
- 
- typedef struct {
 diff --git a/migration/pbs-state.c b/migration/pbs-state.c
 new file mode 100644
 index 0000000000..a97187e4d7
@@ -215,3 +191,27 @@ index fe0eefcea6..521a1914e8 100644
              'pbs-masterkey': 'bool',
              'pbs-library-version': 'str',
              'backup-max-workers': 'bool' } }
+diff --git a/include/migration/misc.h b/include/migration/misc.h
+index 804eb23c06..38976047fc 100644
+--- a/include/migration/misc.h
++++ b/include/migration/misc.h
+@@ -105,5 +105,7 @@ bool migration_incoming_postcopy_advised(void);
+ 
+ /* True if background snapshot is active */
+ bool migration_in_bg_snapshot(void);
++/* migration/pbs-state.c */
++void pbs_state_mig_init(void);
+ 
+ #endif
+diff --git a/migration/migration.c b/migration/migration.c
+index 8c5bd0a75c..f24334232a 100644
+--- a/migration/migration.c
++++ b/migration/migration.c
+@@ -263,6 +263,7 @@ void migration_object_init(void)
+ 
+     ram_mig_init();
+     dirty_bitmap_mig_init();
++    pbs_state_mig_init();
+ 
+     /* Initialize cpu throttle timers */
+     cpu_throttle_init();

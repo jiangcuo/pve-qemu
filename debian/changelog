@@ -1,3 +1,9 @@
+pve-qemu-kvm (9.2.0-1+port1) bookworm; urgency=medium
+
+  * update submodule and patches to QEMU 9.2.0
+
+ -- Jiangcuo <jiangcuo@lierfang.com>  Fri, 13 Dec 2024 11:58:15 +0800
+
 pve-qemu-kvm (9.1.2-1) bookworm; urgency=medium
 
   * update submodule and patches to QEMU 9.1.2

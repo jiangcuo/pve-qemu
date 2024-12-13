@@ -1,27 +1,3 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Stefan Reiter <s.reiter@proxmox.com>
-Date: Wed, 8 Jul 2020 09:50:54 +0200
-Subject: [PATCH] PVE: Add PBS block driver to map backup archives into VMs
-
-Signed-off-by: Stefan Reiter <s.reiter@proxmox.com>
-[error cleanups, file_open implementation]
-Signed-off-by: Dietmar Maurer <dietmar@proxmox.com>
-Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
-[WB: add namespace support]
-Signed-off-by: Wolfgang Bumiller <w.bumiller@proxmox.com>
-[FE: adapt to changed function signatures
-     make pbs_co_preadv return values consistent with QEMU
-     getlength is now a coroutine function]
-Signed-off-by: Fiona Ebner <f.ebner@proxmox.com>
----
- block/meson.build    |   2 +
- block/pbs.c          | 306 +++++++++++++++++++++++++++++++++++++++++++
- meson.build          |   2 +-
- qapi/block-core.json |  29 ++++
- qapi/pragma.json     |   1 +
- 5 files changed, 339 insertions(+), 1 deletion(-)
- create mode 100644 block/pbs.c
-
 diff --git a/block/meson.build b/block/meson.build
 index 2367e1ac1b..e178047ec9 100644
 --- a/block/meson.build
@@ -348,18 +324,18 @@ index 0000000000..2d5e28ce8f
 +
 +block_init(bdrv_pbs_init);
 diff --git a/meson.build b/meson.build
-index 426f382178..7e6130cfdf 100644
+index 147097c..4eb7043 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -4559,7 +4559,7 @@ summary_info += {'zstd support':      zstd}
- summary_info += {'Query Processing Library support': qpl}
+@@ -4805,7 +4805,7 @@ summary_info += {'Query Processing Library support': qpl}
  summary_info += {'UADK Library support': uadk}
+ summary_info += {'qatzip support':    qatzip}
  summary_info += {'NUMA host support': numa}
 -summary_info += {'capstone':          capstone}
 +summary_info += {'PBS bdrv support':  config_host.has_key('CONFIG_PBS_BDRV')}
  summary_info += {'libpmem support':   libpmem}
  summary_info += {'libdaxctl support': libdaxctl}
- summary_info += {'libudev':           libudev}
+ summary_info += {'libcbor support':   libcbor}
 diff --git a/qapi/block-core.json b/qapi/block-core.json
 index ac83c3495d..fe0eefcea6 100644
 --- a/qapi/block-core.json

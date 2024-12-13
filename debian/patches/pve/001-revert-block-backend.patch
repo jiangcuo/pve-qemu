@@ -1,0 +1,155 @@
+--- b/block/block-backend.c
++++ a/block/block-backend.c
+@@ -853,6 +853,15 @@
+     return &blk->public;
+ }
+ 
++/*
++ * Returns a BlockBackend given the associated @public fields.
++ */
++BlockBackend *blk_by_public(BlockBackendPublic *public)
++{
++    GLOBAL_STATE_CODE();
++    return container_of(public, BlockBackend, public);
++}
++
+ /*
+  * Disassociates the currently associated BlockDriverState from @blk.
+  */
+@@ -1205,6 +1214,12 @@
+     return blk->iostatus;
+ }
+ 
++void blk_iostatus_disable(BlockBackend *blk)
++{
++    GLOBAL_STATE_CODE();
++    blk->iostatus_enabled = false;
++}
++
+ void blk_iostatus_reset(BlockBackend *blk)
+ {
+     GLOBAL_STATE_CODE();
+@@ -2213,6 +2228,28 @@
+     blk->enable_write_cache = wce;
+ }
+ 
++void blk_activate(BlockBackend *blk, Error **errp)
++{
++    BlockDriverState *bs = blk_bs(blk);
++    GLOBAL_STATE_CODE();
++
++    if (!bs) {
++        error_setg(errp, "Device '%s' has no medium", blk->name);
++        return;
++    }
++
++    /*
++     * Migration code can call this function in coroutine context, so leave
++     * coroutine context if necessary.
++     */
++    if (qemu_in_coroutine()) {
++        bdrv_co_activate(bs, errp);
++    } else {
++        GRAPH_RDLOCK_GUARD_MAINLOOP();
++        bdrv_activate(bs, errp);
++    }
++}
++
+ bool coroutine_fn blk_co_is_inserted(BlockBackend *blk)
+ {
+     BlockDriverState *bs = blk_bs(blk);
+@@ -2343,6 +2380,36 @@
+     return bdrv_op_is_blocked(bs, op, errp);
+ }
+ 
++void blk_op_unblock(BlockBackend *blk, BlockOpType op, Error *reason)
++{
++    BlockDriverState *bs = blk_bs(blk);
++    GLOBAL_STATE_CODE();
++
++    if (bs) {
++        bdrv_op_unblock(bs, op, reason);
++    }
++}
++
++void blk_op_block_all(BlockBackend *blk, Error *reason)
++{
++    BlockDriverState *bs = blk_bs(blk);
++    GLOBAL_STATE_CODE();
++
++    if (bs) {
++        bdrv_op_block_all(bs, reason);
++    }
++}
++
++void blk_op_unblock_all(BlockBackend *blk, Error *reason)
++{
++    BlockDriverState *bs = blk_bs(blk);
++    GLOBAL_STATE_CODE();
++
++    if (bs) {
++        bdrv_op_unblock_all(bs, reason);
++    }
++}
++
+ /**
+  * Return BB's current AioContext.  Note that this context may change
+  * concurrently at any time, with one exception: If the BB has a root node
+@@ -2497,6 +2564,12 @@
+     notifier_list_add(&blk->remove_bs_notifiers, notify);
+ }
+ 
++void blk_add_insert_bs_notifier(BlockBackend *blk, Notifier *notify)
++{
++    GLOBAL_STATE_CODE();
++    notifier_list_add(&blk->insert_bs_notifiers, notify);
++}
++
+ BlockAcctStats *blk_get_stats(BlockBackend *blk)
+ {
+     IO_CODE();
+--- b/include/sysemu/block-backend-global-state.h
++++ a/include/sysemu/block-backend-global-state.h
+@@ -54,6 +54,7 @@
+ void monitor_remove_blk(BlockBackend *blk);
+ 
+ BlockBackendPublic *blk_get_public(BlockBackend *blk);
++BlockBackend *blk_by_public(BlockBackendPublic *public);
+ 
+ void blk_remove_bs(BlockBackend *blk);
+ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp);
+@@ -66,6 +67,7 @@
+ 
+ void blk_iostatus_enable(BlockBackend *blk);
+ BlockDeviceIoStatus blk_iostatus(const BlockBackend *blk);
++void blk_iostatus_disable(BlockBackend *blk);
+ void blk_iostatus_reset(BlockBackend *blk);
+ int blk_attach_dev(BlockBackend *blk, DeviceState *dev);
+ void blk_detach_dev(BlockBackend *blk, DeviceState *dev);
+@@ -74,6 +76,8 @@
+ BlockBackend *blk_by_qdev_id(const char *id, Error **errp);
+ void blk_set_dev_ops(BlockBackend *blk, const BlockDevOps *ops, void *opaque);
+ 
++void blk_activate(BlockBackend *blk, Error **errp);
++
+ int blk_make_zero(BlockBackend *blk, BdrvRequestFlags flags);
+ void blk_aio_cancel(BlockAIOCB *acb);
+ int blk_commit_all(void);
+@@ -87,6 +91,9 @@
+ void blk_set_enable_write_cache(BlockBackend *blk, bool wce);
+ int blk_get_flags(BlockBackend *blk);
+ bool blk_op_is_blocked(BlockBackend *blk, BlockOpType op, Error **errp);
++void blk_op_unblock(BlockBackend *blk, BlockOpType op, Error *reason);
++void blk_op_block_all(BlockBackend *blk, Error *reason);
++void blk_op_unblock_all(BlockBackend *blk, Error *reason);
+ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
+                         Error **errp);
+ void blk_add_aio_context_notifier(BlockBackend *blk,
+@@ -98,6 +105,7 @@
+                                      void (*detach_aio_context)(void *),
+                                      void *opaque);
+ void blk_add_remove_bs_notifier(BlockBackend *blk, Notifier *notify);
++void blk_add_insert_bs_notifier(BlockBackend *blk, Notifier *notify);
+ BlockBackendRootState *blk_get_root_state(BlockBackend *blk);
+ void blk_update_root_state(BlockBackend *blk);
+ bool blk_get_detect_zeroes_from_root_state(BlockBackend *blk);

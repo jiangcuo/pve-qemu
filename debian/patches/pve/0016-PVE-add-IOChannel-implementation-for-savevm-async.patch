@@ -1,28 +1,3 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Fiona Ebner <f.ebner@proxmox.com>
-Date: Thu, 13 Oct 2022 11:33:50 +0200
-Subject: [PATCH] PVE: add IOChannel implementation for savevm-async
-
-based on migration/channel-block.c and the implementation that was
-present in migration/savevm-async.c before QEMU 7.1.
-
-Passes along read/write requests to the given BlockBackend, while
-ensuring that a read request going beyond the end results in a
-graceful short read.
-
-Additionally, allows tracking the current position from the outside
-(intended to be used for progress tracking).
-
-Signed-off-by: Fiona Ebner <f.ebner@proxmox.com>
-Signed-off-by: Thomas Lamprecht <t.lamprecht@proxmox.com>
----
- migration/channel-savevm-async.c | 184 +++++++++++++++++++++++++++++++
- migration/channel-savevm-async.h |  51 +++++++++
- migration/meson.build            |   1 +
- 3 files changed, 236 insertions(+)
- create mode 100644 migration/channel-savevm-async.c
- create mode 100644 migration/channel-savevm-async.h
-
 diff --git a/migration/channel-savevm-async.c b/migration/channel-savevm-async.c
 new file mode 100644
 index 0000000000..081a192f49
@@ -279,6 +254,6 @@ index 5ce2acb41e..020127d901 100644
    'channel.c',
    'channel-block.c',
 +  'channel-savevm-async.c',
+   'cpu-throttle.c',
    'dirtyrate.c',
    'exec.c',
-   'fd.c',
