@@ -1,3 +1,3 @@
 [submodule "qemu"]
 	path = qemu
-	url = https://github.com/qemu/qemu
+	url = https://gitea.lierfang.com/Proxmox-Port/qemu
