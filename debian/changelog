@@ -1,3 +1,9 @@
+pve-qemu-kvm (9.2.0-1+port2) bookworm; urgency=medium
+
+  * !Rervert qdev-monitor: avoid QemuOpts in QMP device_add .
+
+ -- Jiangcuo <Jiangcuo@lierfang.com>  Sun, 15 Dec 2024 19:13:22 +0800
+
 pve-qemu-kvm (9.2.0-1+port1) bookworm; urgency=medium
 
   * update submodule and patches to QEMU 9.2.0
