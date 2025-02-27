@@ -9,6 +9,7 @@ extra/0008-pci-acpi-Windows-PCI-Label-Id-bug-workaround.patch
 extra/0009-hw-usb-hcd-xhci-pci-Use-modulo-to-select-MSI-vector-.patch
 extra/0010-pci-ensure-valid-link-status-bits-for-downstream-por.patch
 extra/0011-pci-msix-Fix-msix-pba-read-vector-poll-end-calculati.patch
+extra/cpu-add-Kunpeng-920-cpu-support.patch
 bitmap-mirror/0001-drive-mirror-add-support-for-sync-bitmap-mode-never.patch
 bitmap-mirror/0002-drive-mirror-add-support-for-conditional-and-always-.patch
 bitmap-mirror/0003-mirror-add-check-for-bitmap-mode-without-bitmap.patch

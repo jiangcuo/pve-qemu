@@ -1,8 +1,15 @@
+pve-qemu-kvm (9.2.0-3) bookworm; urgency=medium
+
+  * rebuild for port
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Wed, 26 Feb 2025 19:28:24 +0800
+
 pve-qemu-kvm (9.2.0-2) bookworm; urgency=medium
 
-  * Build for port
+  * fix assertion failure when migrating a VM with multiple disks on a
+    replicated ZFS.
 
- -- Jiangcuo <jiangcuo@lierfang.com>  Sat, 08 Feb 2025 13:20:03 +0800
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 24 Feb 2025 17:33:34 +0100
 
 pve-qemu-kvm (9.2.0-1) bookworm; urgency=medium
 
