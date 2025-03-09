@@ -29,13 +29,10 @@ PC_BIOS_FW_PURGE_LIST_IN = \
 	openbios-sparc32 \
 	openbios-sparc64 \
 	palcode-clipper \
-	s390-ccw.img \
-	s390-netboot.img \
 	u-boot.e500 \
 	.*[a-zA-Z0-9]\.dtb \
 	.*[a-zA-Z0-9]\.dts \
 	qemu_vga.ndrv \
-	slof.bin \
 
 BLOB_PURGE_SED_CMDS = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "/$(FILE)/d")
 BLOB_PURGE_FILTER = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "$(FILE)")

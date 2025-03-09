@@ -1,3 +1,11 @@
+pve-qemu-kvm (9.2.0-4) bookworm; urgency=medium
+
+  * update to 9.2.0-4
+
+  * add ppc and s390x pc-bios
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Sun, 09 Mar 2025 12:51:42 +0800
+
 pve-qemu-kvm (9.2.0-3) bookworm; urgency=medium
 
   * rebuild for port

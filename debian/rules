@@ -149,7 +149,7 @@ binary-arch: build install
 #	dh_installinfo
 	dh_installman
 	dh_link
-	dh_strip --dbgsym-migration='pve-qemu-kvm-dbg (<<8.0.0-1~)'
+	dh_strip --dbgsym-migration='pve-qemu-kvm-dbg (<<8.0.0-1~)' -Xs390-ccw.img -Xs390-ccw -Xopenbios-ppc
 	dh_compress
 	dh_fixperms
 #	dh_perl
