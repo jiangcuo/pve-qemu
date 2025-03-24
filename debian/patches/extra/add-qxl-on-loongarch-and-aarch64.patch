@@ -1,0 +1,22 @@
+diff --git a/hw/arm/Kconfig b/hw/arm/Kconfig
+index 1b25e73..64d871f 100644
+--- a/hw/arm/Kconfig
++++ b/hw/arm/Kconfig
+@@ -36,6 +36,7 @@ config ARM_VIRT
+     select ACPI_VIOT
+     select VIRTIO_MEM_SUPPORTED
+     select ACPI_CXL
++    select QXL
+     select ACPI_HMAT
+ 
+ config CUBIEBOARD
+diff --git a/hw/loongarch/Kconfig b/hw/loongarch/Kconfig
+index fe1c6fe..8993a45 100644
+--- a/hw/loongarch/Kconfig
++++ b/hw/loongarch/Kconfig
+@@ -22,4 +22,5 @@ config LOONGARCH_VIRT
+     select FW_CFG_DMA
+     select DIMM
+     select PFLASH_CFI01
++    select QXL
+     select ACPI_HMAT
