@@ -1,3 +1,9 @@
+pve-qemu-kvm (9.2.0-5) bookworm; urgency=medium
+
+  * Add qxl device for loongarch64 and aarch64
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Mon, 24 Mar 2025 21:40:53 +0800
+
 pve-qemu-kvm (9.2.0-4) bookworm; urgency=medium
 
   * update to 9.2.0-4
