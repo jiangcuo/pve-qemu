@@ -1,0 +1,30 @@
+From 5fe6213c36ac88ba11ba7b0fb075b8c5719320d2 Mon Sep 17 00:00:00 2001
+From: Michael Scherle <michael.scherle@rz.uni-freiburg.de>
+Date: Thu, 31 Oct 2024 12:13:50 +0100
+Subject: [PATCH 09/17] Fixed wrong color pre display driver
+
+This hack/fix seems not/no longer needend on flex gpus
+---
+ ui/spice-display.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/ui/spice-display.c b/ui/spice-display.c
+index 4a87e2822f..e92b7f2c74 100644
+--- a/ui/spice-display.c
++++ b/ui/spice-display.c
+@@ -955,9 +955,9 @@ static void spice_gl_switch(DisplayChangeListener *dcl,
+     }
+     ssd->ds = new_surface;
+     if (ssd->ds) {
+-        if (remote_client && surface_format(ssd->ds) != PIXMAN_r5g6b5) {
+-            ssd->ds->target_glformat = GL_RGBA;
+-        }
++        // if (remote_client && surface_format(ssd->ds) != PIXMAN_r5g6b5) {
++        //    ssd->ds->target_glformat = GL_RGBA;
++        // }
+         surface_gl_create_texture(ssd->gls, ssd->ds);
+         fd = egl_get_fd_for_texture(ssd->ds->texture,
+                                     &stride, &fourcc,
+-- 
+2.39.5
+

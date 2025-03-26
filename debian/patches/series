@@ -67,3 +67,13 @@ pve/0047-PVE-backup-factor-out-setting-up-snapshot-access-for.patch
 pve/0048-PVE-backup-save-device-name-in-device-info-structure.patch
 pve/0049-PVE-backup-include-device-name-in-error-when-setting.patch
 pve/0050-adapt-machine-version-deprecation-for-Proxmox-VE.patch
+spice/0001-ui-spice-Add-an-option-for-users-to-provide-a-prefer.patch
+spice/0002-ui-spice-Enable-gl-on-option-for-non-local-or-remote.patch
+spice/0003-ui-spice-Submit-the-gl_draw-requests-at-60-FPS-for-r.patch
+spice/0004-ui-console-gl-Add-an-option-to-override-a-surface-s-.patch
+spice/0005-ui-spice-Override-the-surface-s-glformat-when-gl-on-.patch
+spice/0006-ui-console-gl-Add-a-helper-to-create-a-texture-with-.patch
+spice/0007-ui-spice-Create-another-texture-with-linear-layout-w.patch
+spice/0008-ui-spice-Blit-the-scanout-texture-if-its-memory-layo.patch
+spice/0009-Fixed-wrong-color-pre-display-driver.patch
+#spice/0015-spice-display-add-interface_request_gl_update.patch

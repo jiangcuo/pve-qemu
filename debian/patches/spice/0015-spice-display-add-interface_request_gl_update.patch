@@ -1,0 +1,50 @@
+From d53b5eed2088155c5452c4208c3e7e477dc7573e Mon Sep 17 00:00:00 2001
+From: Michael Scherle <michael.scherle@rz.uni-freiburg.de>
+Date: Wed, 26 Feb 2025 11:40:53 +0100
+Subject: [PATCH 15/17] spice-display: add interface_request_gl_update
+
+add a callback to trigger a monitor config and gl update.
+---
+ ui/spice-display.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/ui/spice-display.c b/ui/spice-display.c
+index e92b7f2c74..ae66806b9a 100644
+--- a/ui/spice-display.c
++++ b/ui/spice-display.c
+@@ -700,6 +700,8 @@ static int interface_client_monitors_config(QXLInstance *sin,
+     return 1;
+ }
+ 
++static void interface_request_gl_update(QXLInstance *sin);
++
+ static const QXLInterface dpy_interface = {
+     .base.type               = SPICE_INTERFACE_QXL,
+     .base.description        = "qemu simple display",
+@@ -726,6 +728,7 @@ static const QXLInterface dpy_interface = {
+     .update_area_complete    = interface_update_area_complete,
+     .set_client_capabilities = interface_set_client_capabilities,
+     .client_monitors_config  = interface_client_monitors_config,
++    .request_gl_update       = interface_request_gl_update,
+ };
+ 
+ static void display_update(DisplayChangeListener *dcl,
+@@ -1358,3 +1361,15 @@ void qemu_spice_display_init(void)
+ 
+     qemu_spice_display_init_done();
+ }
++
++static void interface_request_gl_update(QXLInstance *sin)
++{
++
++    SimpleSpiceDisplay *ssd = container_of(sin, SimpleSpiceDisplay, qxl);
++
++    if(!ssd->guest_dmabuf){
++        return;
++    }
++    qemu_spice_gl_monitor_config(ssd, 0, 0, ssd->guest_dmabuf->width, ssd->guest_dmabuf->height);
++    qemu_spice_gl_update(&ssd->dcl, 0, 0,  ssd->guest_dmabuf->width, ssd->guest_dmabuf->height);
++}
+-- 
+2.39.5
+

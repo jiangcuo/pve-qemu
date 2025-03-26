@@ -1,0 +1,43 @@
+diff --git a/include/ui/spice-display.h b/include/ui/spice-display.h
+index e1a9b36..f4922dd 100644
+--- a/include/ui/spice-display.h
++++ b/include/ui/spice-display.h
+@@ -151,6 +151,7 @@ struct SimpleSpiceCursor {
+ };
+ 
+ extern bool spice_opengl;
++extern bool remote_client;
+ 
+ int qemu_spice_rect_is_empty(const QXLRect* r);
+ void qemu_spice_rect_union(QXLRect *dest, const QXLRect *r);
+diff --git a/ui/spice-core.c b/ui/spice-core.c
+index bd9dbe0..297e0a3 100644
+--- a/ui/spice-core.c
++++ b/ui/spice-core.c
+@@ -836,10 +836,14 @@ static void qemu_spice_init(void)
+ #ifdef HAVE_SPICE_GL
+     if (qemu_opt_get_bool(opts, "gl", 0)) {
+         if ((port != 0) || (tls_port != 0)) {
++#if SPICE_SERVER_VERSION >= 0x000f03 /* release 0.15.3 */
++            remote_client = 1;
++#else
+             error_report("SPICE GL support is local-only for now and "
+                          "incompatible with -spice port/tls-port");
+             exit(1);
+         }
++#endif
+         egl_init(qemu_opt_get(opts, "rendernode"), DISPLAY_GL_MODE_ON, &error_fatal);
+         spice_opengl = 1;
+     }
+diff --git a/ui/spice-display.c b/ui/spice-display.c
+index c794ae0..bf4caf0 100644
+--- a/ui/spice-display.c
++++ b/ui/spice-display.c
+@@ -29,6 +29,7 @@
+ #include "ui/spice-display.h"
+ 
+ bool spice_opengl;
++bool remote_client;
+ 
+ int qemu_spice_rect_is_empty(const QXLRect* r)
+ {
