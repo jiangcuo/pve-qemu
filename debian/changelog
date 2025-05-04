@@ -1,3 +1,10 @@
+pve-qemu-kvm (9.2.0-5+port1) unstable; urgency=medium
+
+  * Add qxl for arm64 and loongarch64
+  * Add spice patch,we can set preferred-codec=gstreamer:[h264|h265] or other. 
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Sun, 04 May 2025 16:52:15 +0800
+
 pve-qemu-kvm (9.2.0-5) bookworm; urgency=medium
 
   * pve backup: backup-access api: simplify bitmap logic
