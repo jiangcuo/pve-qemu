@@ -10,6 +10,7 @@ extra/0009-hw-usb-hcd-xhci-pci-Use-modulo-to-select-MSI-vector-.patch
 extra/0010-pci-ensure-valid-link-status-bits-for-downstream-por.patch
 extra/0011-pci-msix-Fix-msix-pba-read-vector-poll-end-calculati.patch
 extra/cpu-add-Kunpeng-920-cpu-support.patch
+extra/add-qxl-on-loongarch-and-aarch64.patch
 bitmap-mirror/0001-drive-mirror-add-support-for-sync-bitmap-mode-never.patch
 bitmap-mirror/0002-drive-mirror-add-support-for-conditional-and-always-.patch
 bitmap-mirror/0003-mirror-add-check-for-bitmap-mode-without-bitmap.patch
@@ -89,3 +90,7 @@ pve/0070-PVE-backup-implement-bitmap-support-for-external-bac.patch
 pve/0071-PVE-backup-backup-access-api-indicate-situation-wher.patch
 pve/0072-PVE-backup-backup-access-api-explicit-bitmap-mode-pa.patch
 pve/0073-PVE-backup-backup-access-api-simplify-bitmap-logic.patch
+spice/0001-ui-spice-Add-an-option-for-users-to-provide-a-prefer.patch
+spice/0002-ui-spice-Enable-gl-on-option-for-non-local-or-remote.patch
+spice/0003-ui-spice-Submit-the-gl_draw-requests-at-60-FPS-for-r.patch
+spice/0004-ui-console-gl-Add-an-option-to-override-a-surface-s-.patch
