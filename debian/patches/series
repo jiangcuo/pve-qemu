@@ -94,3 +94,4 @@ spice/0001-ui-spice-Add-an-option-for-users-to-provide-a-prefer.patch
 spice/0002-ui-spice-Enable-gl-on-option-for-non-local-or-remote.patch
 spice/0003-ui-spice-Submit-the-gl_draw-requests-at-60-FPS-for-r.patch
 spice/0004-ui-console-gl-Add-an-option-to-override-a-surface-s-.patch
+extra/loongarch-fix-vcpu-reset-command-word-issue.patch
