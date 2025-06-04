@@ -15,6 +15,7 @@ extra/0014-loongarch-fix-vcpu-reset-command-word-issue.patch
 extra/0015-add-zhaoxin-cpu-support.patch
 extra/0016-add-hygon-cpu-support.patch
 extra/0017-add-hygon-Dhyana-v3-support.patch
+extra/0018-vfio-pci-Ascend310-910-710-need-4Bytes-quirk-in-barX.patch
 bitmap-mirror/0001-drive-mirror-add-support-for-sync-bitmap-mode-never.patch
 bitmap-mirror/0002-drive-mirror-add-support-for-conditional-and-always-.patch
 bitmap-mirror/0003-mirror-add-check-for-bitmap-mode-without-bitmap.patch
