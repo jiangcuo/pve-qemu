@@ -1,3 +1,11 @@
+pve-qemu-kvm (9.2.0-5+port2) bookworm; urgency=medium
+
+  * add zhaoxin & hygon cpu support
+  
+  * add hawei ascend gpu support
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Sat, 14 Jun 2025 18:39:51 +0800
+
 pve-qemu-kvm (9.2.0-5+port1) unstable; urgency=medium
 
   * Add qxl for arm64 and loongarch64
