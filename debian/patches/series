@@ -11,7 +11,6 @@ extra/0010-pci-ensure-valid-link-status-bits-for-downstream-por.patch
 extra/0011-pci-msix-Fix-msix-pba-read-vector-poll-end-calculati.patch
 extra/0012-cpu-add-Kunpeng-920-cpu-support.patch
 extra/0013-add-qxl-on-loongarch-and-aarch64.patch
-extra/0014-loongarch-fix-vcpu-reset-command-word-issue.patch
 extra/0015-add-zhaoxin-cpu-support.patch
 extra/0016-add-hygon-cpu-support.patch
 extra/0017-add-hygon-Dhyana-v3-support.patch

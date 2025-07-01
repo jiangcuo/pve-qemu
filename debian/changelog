@@ -1,3 +1,9 @@
+pve-qemu-kvm (9.2.0-5+port3) bookworm; urgency=medium
+
+  * remove loongarch reset vgpu patch
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Tue, 01 Jul 2025 18:39:51 +0800
+
 pve-qemu-kvm (9.2.0-5+port2) bookworm; urgency=medium
 
   * add zhaoxin & hygon cpu support
