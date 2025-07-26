@@ -12,7 +12,7 @@ PACKAGE=pve-qemu-kvm
 destdir := $(CURDIR)/debian/$(PACKAGE)
 
 flagfile := $(destdir)/usr/share/kvm/recognized-CPUID-flags-x86_64
-machinefile := $(destdir)/usr/share/kvm/machine-versions-x86_64.json
+machinefile := $(destdir)/usr/share/kvm/machine-versions.json
 
 # default QEMU out-of-tree build directory is ./build
 BUILDDIR=build
@@ -35,7 +35,7 @@ endif
 ifneq "$(wildcard /usr/share/misc/config.guess)" ""
 	cp -f /usr/share/misc/config.guess config.guess
 endif
-
+	echo "usr/bin/qemu-system-${HOST_CPU} usr/bin/kvm" >> debian/pve-qemu-kvm.links
 	# guest-agent is only required for guest systems
 	./configure \
 	    --disable-download \
@@ -43,14 +43,13 @@ endif
 	    --localstatedir=/var \
 	    --prefix=/usr \
 	    --sysconfdir=/etc \
-	    --target-list=$(HOST_CPU)-softmmu,aarch64-softmmu \
 	    --with-suffix="kvm" \
 	    --with-pkgversion="${DEB_SOURCE}_${DEB_VERSION_UPSTREAM_REVISION}" \
 	    --audio-drv-list="alsa" \
 	    --datadir=/usr/share \
 	    --libexecdir=/usr/lib/kvm \
 	    --disable-capstone \
-	    --disable-gtk \
+	    --enable-gtk \
 	    --disable-guest-agent \
 	    --disable-guest-agent-msi \
 	    --disable-libnfs \
@@ -61,6 +60,7 @@ endif
 	    --disable-xen \
 	    --enable-curl \
 	    --enable-docs \
+	    --enable-glusterfs \
 	    --enable-gnutls \
 	    --enable-libiscsi \
 	    --enable-libusb \
@@ -120,7 +120,9 @@ install: build
 
 	# CPU flags are static for QEMU version, allows avoiding more costly checks
 	$(destdir)/usr/bin/qemu-system-x86_64 -cpu help | ./debian/parse-cpu-flags.pl > $(flagfile)
-	$(destdir)/usr/bin/qemu-system-x86_64 -machine help | ./debian/parse-machines.pl > $(machinefile)
+	$(destdir)/usr/bin/qemu-system-x86_64 -machine help > $(CURDIR)/machine.list
+	$(destdir)/usr/bin/qemu-system-aarch64 -machine help >> $(CURDIR)/machine.list
+	cat $(CURDIR)/machine.list | ./debian/parse-machines.pl > $(machinefile)
 
 # Build architecture-independent files here.
 binary-indep: build install

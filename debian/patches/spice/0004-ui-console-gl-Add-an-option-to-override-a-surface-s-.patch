@@ -1,0 +1,57 @@
+From 3dbefc57153f905b5326cf051b6026291fd56ef8 Mon Sep 17 00:00:00 2001
+From: Vivek Kasireddy <vivek.kasireddy@intel.com>
+Date: Fri, 5 Jan 2024 18:02:41 -0800
+Subject: [PATCH 04/17] ui/console-gl: Add an option to override a surface's
+ glformat
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In some cases where a UI component (e.g, Spice) needs to choose
+a particular glformat for a surface while creating a texture,
+this new GLenum provides an option to do so. One situation
+where this needs to be done is when the Host endianness is
+causing issues such as interchanged R and B channels.
+
+Cc: Gerd Hoffmann <kraxel@redhat.com>
+Cc: Marc-André Lureau <marcandre.lureau@redhat.com>
+Cc: Frediano Ziglio <freddy77@gmail.com>
+Cc: Dongwon Kim <dongwon.kim@intel.com>
+Signed-off-by: Vivek Kasireddy <vivek.kasireddy@intel.com>
+---
+ include/ui/surface.h | 1 +
+ ui/console-gl.c      | 6 ++++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/include/ui/surface.h b/include/ui/surface.h
+index 4244e0ca4a..a39fee55a2 100644
+--- a/include/ui/surface.h
++++ b/include/ui/surface.h
+@@ -20,6 +20,7 @@ typedef struct DisplaySurface {
+     uint8_t flags;
+ #ifdef CONFIG_OPENGL
+     GLenum glformat;
++    GLenum target_glformat;
+     GLenum gltype;
+     GLuint texture;
+ #endif
+diff --git a/ui/console-gl.c b/ui/console-gl.c
+index 103b954017..dee317f42c 100644
+--- a/ui/console-gl.c
++++ b/ui/console-gl.c
+@@ -72,6 +72,12 @@ void surface_gl_create_texture(QemuGLShader *gls,
+         g_assert_not_reached();
+     }
+ 
++    /* The caller wants to override the glformat in some specific cases */
++    if (surface->target_glformat &&
++        surface->target_glformat != surface->glformat) {
++        surface->glformat = surface->target_glformat;
++    }
++
+     glGenTextures(1, &surface->texture);
+     glEnable(GL_TEXTURE_2D);
+     glBindTexture(GL_TEXTURE_2D, surface->texture);
+-- 
+2.39.5
+
