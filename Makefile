@@ -9,8 +9,8 @@ ORIG_SRC_TAR=$(PACKAGE)_$(DEB_VERSION_UPSTREAM).orig.tar.gz
 GITVERSION := $(shell git rev-parse HEAD)
 
 DSC=$(PACKAGE)_$(DEB_VERSION_UPSTREAM_REVISION).dsc
-DEB = $(PACKAGE)_$(DEB_VERSION_UPSTREAM_REVISION)_$(DEB_BUILD_ARCH).deb
-DEB_DBG = $(PACKAGE)-dbgsym_$(DEB_VERSION_UPSTREAM_REVISION)_$(DEB_BUILD_ARCH).deb
+DEB = $(PACKAGE)_$(DEB_VERSION_UPSTREAM_REVISION)_$(DEB_HOST_ARCH).deb
+DEB_DBG = $(PACKAGE)-dbgsym_$(DEB_VERSION_UPSTREAM_REVISION)_$(DEB_HOST_ARCH).deb
 DEBS = $(DEB) $(DEB_DBG)
 
 all: $(DEBS)
@@ -57,7 +57,7 @@ $(BUILDDIR): submodule
 deb kvm: $(DEBS)
 $(DEB_DBG): $(DEB)
 $(DEB): $(BUILDDIR)
-	cd $(BUILDDIR); dpkg-buildpackage -b -us -uc
+	cd $(BUILDDIR); dpkg-buildpackage -b -us -uc -a$(DEB_HOST_ARCH)
 	lintian $(DEBS)
 
 sbuild: $(DSC)

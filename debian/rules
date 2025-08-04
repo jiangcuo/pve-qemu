@@ -18,9 +18,16 @@ machinefile := $(destdir)/usr/share/kvm/machine-versions.json
 BUILDDIR=build
 
 # FIXME: pass to configure as --extra-cflags=CFLAGS ?! also LDFLAGS?
-CFLAGS += -Wall
+CFLAGS += -Wall -L/usr/lib/$(DEB_HOST_GNU_CPU)-linux-gnu
+export CC = $(DEB_HOST_GNU_CPU)-linux-gnu-gcc
+export CXX = $(DEB_HOST_GNU_CPU)-linux-gnu-g++
+export PKG_CONFIG = $(DEB_HOST_GNU_CPU)-linux-gnu-pkg-config
+export CFLAGS 
 
-export CFLAGS
+CROSS_COMPILE := 
+ifneq ($(DEB_HOST_ARCH),$(DEB_BUILD_ARCH))
+	CROSS_COMPILE := "--cross-prefix="
+endif
 
 # DEB_BUILD_OPTIONS=parallel=N
 MAKEFLAGS += $(subst parallel=,-j,$(filter parallel=%,${DEB_BUILD_OPTIONS}))
@@ -75,7 +82,8 @@ endif
 	    --enable-usb-redir \
 	    --enable-virglrenderer \
 	    --enable-virtfs \
-	    --enable-zstd
+	    --enable-zstd \
+		$(CROSS_COMPILE)
 
 build: build-arch build-indep
 build-arch: build-stamp
