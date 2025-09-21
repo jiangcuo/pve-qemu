@@ -1,3 +1,11 @@
+pve-qemu-kvm (10.0.2-4+port1) pxvirt; urgency=medium
+
+  * Add pxvirt Patch
+  * Add cross build support
+  * d/control: add libgfapi0 to depends
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Sun, 21 Sep 2025 13:10:54 +0800
+
 pve-qemu-kvm (10.0.2-4) trixie; urgency=medium
 
   * savevm-async: reuse migration blocker check for snapshots/hibernation to
