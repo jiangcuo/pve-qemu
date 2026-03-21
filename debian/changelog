@@ -1,3 +1,11 @@
+pve-qemu-kvm (10.0.9) pxvirt; urgency=medium
+
+  * Add 3A6000 cpu model
+  * Add phytium cpu model
+  * Add generic-v8 cpu model for arm live-migrate.
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Sat, 21 Mar 2026 00:51:36 +0000
+
 pve-qemu-kvm (10.0.2-4+port1) pxvirt; urgency=medium
 
   * Add pxvirt Patch

@@ -1,0 +1,92 @@
+diff --git a/hw/loongarch/virt.c b/hw/loongarch/virt.c
+index 65c9027feb..9340b91322 100644
+--- a/hw/loongarch/virt.c
++++ b/hw/loongarch/virt.c
+@@ -561,7 +561,14 @@ static MemTxResult virt_iocsr_misc_read(void *opaque, hwaddr addr,
+         ret = 0x6e6f73676e6f6f4cULL; /* "Loongson" */
+         break;
+     case CPUNAME_REG:
+-        ret = 0x303030354133ULL;     /* "3A5000" */
++        /* Return CPU name based on machine cpu_type:
++         * la664 → "3A6000" (0x303030364133), others → "3A5000" (0x303030354133)
++         */
++        if (strstr(MACHINE(lvms)->cpu_type, "la664")) {
++            ret = 0x303030364133ULL; /* "3A6000" */
++        } else {
++            ret = 0x303030354133ULL; /* "3A5000" */
++        }
+         break;
+     case MISC_FUNC_REG:
+         if (!virt_is_veiointc_enabled(lvms)) {
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index ea1665e270..a1d7dc6f31 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -506,6 +506,59 @@ static void loongarch_la464_initfn(Object *obj)
+     loongarch_cpu_post_init(obj);
+ }
+ 
++static void loongarch_la664_initfn(Object *obj)
++{
++    LoongArchCPU *cpu = LOONGARCH_CPU(obj);
++    CPULoongArchState *env = &cpu->env;
++    uint32_t data = 0;
++
++    /*
++     * Loongson 3A6000 / 3C6000 (LA664 core) is similar to LA464,
++     * so first initialize cpu data as la464, then update the special
++     * registers from real Loongson 3A6000 hardware (PRID 0x0014d000).
++     */
++    loongarch_la464_initfn(obj);
++
++    cpu->dtb_compatible = "loongarch,Loongson-3A6000";
++
++    /* PRID: Company=0x14 (Loongson), Series=0xd0 (LA664), Rev=0x00 */
++    env->cpucfg[0] = 0x0014d000;
++
++    /* CPUCFG2: add LA664-specific features on top of LA464 base */
++    data = env->cpucfg[2];
++    data = FIELD_DP32(data, CPUCFG2, LVZ, 1);       /* LoongArch Virtualization */
++    data = FIELD_DP32(data, CPUCFG2, LVZ_VER, 1);
++    data = FIELD_DP32(data, CPUCFG2, LBT_X86, 1);   /* Binary Translation: x86 */
++    data = FIELD_DP32(data, CPUCFG2, LBT_ARM, 1);   /* Binary Translation: ARM */
++    data = FIELD_DP32(data, CPUCFG2, LBT_MIPS, 1);  /* Binary Translation: MIPS */
++    env->cpucfg[2] = data;
++
++    /* CPUCFG3: microarch features */
++    data = 0;
++    data = FIELD_DP32(data, CPUCFG3, CCDMA, 1);
++    data = FIELD_DP32(data, CPUCFG3, SFB, 1);
++    data = FIELD_DP32(data, CPUCFG3, UCACC, 1);
++    data = FIELD_DP32(data, CPUCFG3, LLEXC, 1);
++    data = FIELD_DP32(data, CPUCFG3, SCDLY, 1);
++    data = FIELD_DP32(data, CPUCFG3, LLDBAR, 1);
++    data = FIELD_DP32(data, CPUCFG3, ITLBHMC, 1);
++    data = FIELD_DP32(data, CPUCFG3, ICHMC, 1);
++    data = FIELD_DP32(data, CPUCFG3, SPW_LVL, 4);
++    data = FIELD_DP32(data, CPUCFG3, SPW_HP_HF, 1);
++    data = FIELD_DP32(data, CPUCFG3, RVA, 1);
++    data = FIELD_DP32(data, CPUCFG3, RVAMAX, 7);
++    env->cpucfg[3] = data;
++
++    /* CPUCFG6: performance monitor config */
++    data = 0;
++    data = FIELD_DP32(data, CPUCFG6, PMP, 1);
++    data = FIELD_DP32(data, CPUCFG6, PMVER, 1);
++    data = FIELD_DP32(data, CPUCFG6, PMNUM, 3);
++    data = FIELD_DP32(data, CPUCFG6, PMBITS, 63);
++    data = FIELD_DP32(data, CPUCFG6, UPM, 1);
++    env->cpucfg[6] = data;
++}
++
+ static void loongarch_la132_initfn(Object *obj)
+ {
+     LoongArchCPU *cpu = LOONGARCH_CPU(obj);
+@@ -999,6 +1052,7 @@ static const TypeInfo loongarch_cpu_type_infos[] = {
+         .class_init = loongarch64_cpu_class_init,
+     },
+     DEFINE_LOONGARCH_CPU_TYPE(64, "la464", loongarch_la464_initfn),
++    DEFINE_LOONGARCH_CPU_TYPE(64, "la664", loongarch_la664_initfn),
+     DEFINE_LOONGARCH_CPU_TYPE(32, "la132", loongarch_la132_initfn),
+     DEFINE_LOONGARCH_CPU_TYPE(64, "max", loongarch_max_initfn),
+ };

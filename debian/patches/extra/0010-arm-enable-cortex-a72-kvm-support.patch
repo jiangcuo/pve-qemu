@@ -1,0 +1,556 @@
+diff --git a/hw/arm/virt.c b/hw/arm/virt.c
+index d1f94a4079..b3e0f567e6 100644
+--- a/hw/arm/virt.c
++++ b/hw/arm/virt.c
+@@ -3148,6 +3148,8 @@ static void virt_machine_class_init(ObjectClass *oc, void *data)
+         ARM_CPU_TYPE_NAME("cortex-a53"),
+         ARM_CPU_TYPE_NAME("cortex-a57"),
+         ARM_CPU_TYPE_NAME("Kunpeng-920"),
++        ARM_CPU_TYPE_NAME("phytium"),
++        ARM_CPU_TYPE_NAME("generic-v8"),
+ #if defined(CONFIG_KVM) || defined(CONFIG_HVF)
+         ARM_CPU_TYPE_NAME("host"),
+ #endif /* CONFIG_KVM || CONFIG_HVF */
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index a8177c6c2e..95f91910bd 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1095,6 +1095,47 @@ struct ArchCPU {
+     bool prop_pauth_qarma5;
+     bool prop_lpa2;
+ 
++    /*
++     * generic-v8 CPU model feature properties.
++     *
++     * Design: zero-base + explicit enables.  After KVM reset, ISAR0/ISAR1 are
++     * zeroed and only the fields whose property is 'on' are restored from the
++     * host value.  Unknown fields from future CPUs are automatically blocked.
++     *
++     * Default-on (universal ARMv8 features present in every supported host):
++     */
++    bool prop_gv8_aes;      /* AES=host_aes (FEAT_AES + FEAT_PMULL) */
++    bool prop_gv8_sha1;     /* SHA1=1 */
++    bool prop_gv8_sha2;     /* SHA2=min(host,1) (SHA-256); sha512=on upgrades to =2 */
++    bool prop_gv8_crc32;    /* CRC32=1 */
++    bool prop_gv8_atomic;   /* ATOMIC=2 (FEAT_LSE) */
++    bool prop_gv8_rdm;      /* RDM=1 (FEAT_RDM) */
++    bool prop_gv8_dp;       /* DP=1 (FEAT_DotProd) */
++    bool prop_gv8_dpb;      /* DPB=min(host,1) (FEAT_DPB); dpb2=on upgrades to =2 */
++    /*
++     * Default-off (platform-specific; enable with xxx=on):
++     * ISAR0 optional features:
++     */
++    bool prop_gv8_sha3;     /* SHA3=1 (Phytium/V1/A710/N2) */
++    bool prop_gv8_sm3;      /* SM3=1 (Phytium/V1/A710/N2) */
++    bool prop_gv8_sm4;      /* SM4=1 (Phytium/V1/A710/N2) */
++    bool prop_gv8_sha512;   /* SHA2=host_sha2 (upgrades sha2 from =1 to =2) */
++    bool prop_gv8_fhm;      /* FHM=1 FEAT_FHM (Kunpeng/V1/A710/N2) */
++    bool prop_gv8_rndr;     /* RNDR=1 FEAT_RNG (V1/N2) */
++    bool prop_gv8_ts;       /* TS=host_ts FEAT_FlagM/FlagM2 (A710/N2) */
++    bool prop_gv8_tlb;      /* TLB=host_tlb FEAT_TLBIRANGE (V1/A710/N2) */
++    /* ISAR1 optional features: */
++    bool prop_gv8_jscvt;    /* JSCVT=1 FEAT_JSCVT (Kunpeng/V1/A710/N2) */
++    bool prop_gv8_fcma;     /* FCMA=1 FEAT_FCMA (Kunpeng/V1/A710/N2) */
++    bool prop_gv8_lrcpc;    /* LRCPC=min(host,1) FEAT_LRCPC (Phytium/RK3588/N1+) */
++    bool prop_gv8_dpb2;     /* DPB=host_dpb FEAT_DPB2 (V1/A710/N2; upgrades dpb) */
++    bool prop_gv8_bf16;     /* BF16=host_bf16 FEAT_BF16 (V1/A710/N2) */
++    bool prop_gv8_i8mm;     /* I8MM=1 FEAT_I8MM (V1/A710/N2) */
++    bool prop_gv8_sb;       /* SB=1 FEAT_SB (A710/N2) */
++    bool prop_gv8_frintts;  /* FRINTTS=1 FEAT_FRINTTS (A710/N2) */
++    bool prop_gv8_specres;  /* SPECRES=1 FEAT_SPECRES (A710/N2) */
++    bool prop_gv8_dgh;      /* DGH=1 FEAT_DGH (V1/N2) */
++
+     /* DCZ blocksize, in log_2(words), ie low 4 bits of DCZID_EL0 */
+     uint8_t dcz_blocksize;
+     /* GM blocksize, in log_2(words), ie low 4 bits of GMID_EL0 */
+diff --git a/target/arm/cpu64.c b/target/arm/cpu64.c
+index 2e6b078acb..bb522c557e 100644
+--- a/target/arm/cpu64.c
++++ b/target/arm/cpu64.c
+@@ -808,6 +808,351 @@ static void aarch64_kunpeng_920_initfn(Object *obj)
+ }
+ 
+ 
++static void aarch64_phytium_initfn(Object *obj)
++{
++    ARMCPU *cpu = ARM_CPU(obj);
++
++    /*
++     * Phytium FTC862 CPU (e.g. S5000C-64 / FT-2000+/64) is similar to
++     * cortex-a72, so first initialize cpu data as cortex-a72,
++     * and then update the special registers from real hardware.
++     * Register values taken from Phytium S5000C-64 (MIDR 0x700f8620).
++     */
++    aarch64_a72_initfn(obj);
++
++    /* MIDR: implementer=0x70 (Phytium), part=0x862, revision=0 */
++    cpu->midr = 0x700f8620;
++    cpu->revidr = 0x00000000;
++    cpu->ctr = 0x9444c004;
++    /* AArch64 feature registers - from real hardware (Phytium S5000C-64) */
++    cpu->isar.id_aa64pfr0  = 0x0000000000110011ULL;
++    cpu->isar.id_aa64pfr1  = 0x0000000000000010ULL;
++    cpu->isar.id_aa64isar0 = 0x0000111110212120ULL;
++    cpu->isar.id_aa64isar1 = 0x0000000000100001ULL;
++    cpu->isar.id_aa64isar2 = 0x0000000000000000ULL;
++    cpu->isar.id_aa64mmfr0 = 0x00000111ff000000ULL;
++    cpu->isar.id_aa64mmfr1 = 0x0000000000000000ULL;
++    cpu->isar.id_aa64mmfr2 = 0x0000000000000000ULL;
++    cpu->isar.id_aa64dfr0  = 0x0000000000000006ULL;
++    cpu->isar.id_aa64dfr1  = 0x0000000000000000ULL;
++    /* VFP/SIMD feature registers - Phytium FTC862 specific values */
++    cpu->isar.mvfr0 = 0x00000200;
++    cpu->isar.mvfr1 = 0x13211100;
++    cpu->isar.mvfr2 = 0x00000000;
++}
++
++/* -----------------------------------------------------------------------
++ * generic-v8: a neutral AArch64 CPU model for cross-platform live migration.
++ *
++ * Presents the intersection of features common to both RK3588 (Cortex-A55)
++ * and Phytium S5000C (FTC862), and similar ARMv8 platforms.
++ * Vendor-exclusive features (SM3, SM4, SHA3, SHA-512) are disabled by
++ * default but can be re-enabled via properties (e.g. sm3=on).
++ *
++ * KVM: overrides the host's ID registers after each vCPU reset so that
++ *      the guest always sees the reduced feature set, enabling hot migration
++ *      between heterogeneous ARM hosts.  Requires Linux kernel >= 5.13
++ *      (KVM writable ID registers support).
++ * ----------------------------------------------------------------------- */
++
++/* Default-ON: universal ARMv8 features (present on every supported ARM server) */
++static const Property arm_cpu_gv8_aes_property =
++    DEFINE_PROP_BOOL("aes", ARMCPU, prop_gv8_aes, true);
++static const Property arm_cpu_gv8_sha1_property =
++    DEFINE_PROP_BOOL("sha1", ARMCPU, prop_gv8_sha1, true);
++static const Property arm_cpu_gv8_sha2_property =
++    DEFINE_PROP_BOOL("sha2", ARMCPU, prop_gv8_sha2, true);
++static const Property arm_cpu_gv8_crc32_property =
++    DEFINE_PROP_BOOL("crc32", ARMCPU, prop_gv8_crc32, true);
++static const Property arm_cpu_gv8_atomic_property =
++    DEFINE_PROP_BOOL("atomic", ARMCPU, prop_gv8_atomic, true);
++static const Property arm_cpu_gv8_rdm_property =
++    DEFINE_PROP_BOOL("rdm", ARMCPU, prop_gv8_rdm, true);
++static const Property arm_cpu_gv8_dp_property =
++    DEFINE_PROP_BOOL("dp", ARMCPU, prop_gv8_dp, true);
++static const Property arm_cpu_gv8_dpb_property =
++    DEFINE_PROP_BOOL("dpb", ARMCPU, prop_gv8_dpb, true);
++/* Default-OFF: platform-specific ISAR0 features */
++static const Property arm_cpu_gv8_sha3_property =
++    DEFINE_PROP_BOOL("sha3", ARMCPU, prop_gv8_sha3, false);
++static const Property arm_cpu_gv8_sm3_property =
++    DEFINE_PROP_BOOL("sm3", ARMCPU, prop_gv8_sm3, false);
++static const Property arm_cpu_gv8_sm4_property =
++    DEFINE_PROP_BOOL("sm4", ARMCPU, prop_gv8_sm4, false);
++static const Property arm_cpu_gv8_sha512_property =
++    DEFINE_PROP_BOOL("sha512", ARMCPU, prop_gv8_sha512, false);
++static const Property arm_cpu_gv8_fhm_property =
++    DEFINE_PROP_BOOL("fhm", ARMCPU, prop_gv8_fhm, false);
++static const Property arm_cpu_gv8_rndr_property =
++    DEFINE_PROP_BOOL("rndr", ARMCPU, prop_gv8_rndr, false);
++static const Property arm_cpu_gv8_ts_property =
++    DEFINE_PROP_BOOL("ts", ARMCPU, prop_gv8_ts, false);
++static const Property arm_cpu_gv8_tlb_property =
++    DEFINE_PROP_BOOL("tlb", ARMCPU, prop_gv8_tlb, false);
++/* Default-OFF: platform-specific ISAR1 features */
++static const Property arm_cpu_gv8_jscvt_property =
++    DEFINE_PROP_BOOL("jscvt", ARMCPU, prop_gv8_jscvt, false);
++static const Property arm_cpu_gv8_fcma_property =
++    DEFINE_PROP_BOOL("fcma", ARMCPU, prop_gv8_fcma, false);
++static const Property arm_cpu_gv8_lrcpc_property =
++    DEFINE_PROP_BOOL("lrcpc", ARMCPU, prop_gv8_lrcpc, false);
++static const Property arm_cpu_gv8_dpb2_property =
++    DEFINE_PROP_BOOL("dpb2", ARMCPU, prop_gv8_dpb2, false);
++static const Property arm_cpu_gv8_bf16_property =
++    DEFINE_PROP_BOOL("bf16", ARMCPU, prop_gv8_bf16, false);
++static const Property arm_cpu_gv8_i8mm_property =
++    DEFINE_PROP_BOOL("i8mm", ARMCPU, prop_gv8_i8mm, false);
++static const Property arm_cpu_gv8_sb_property =
++    DEFINE_PROP_BOOL("sb", ARMCPU, prop_gv8_sb, false);
++static const Property arm_cpu_gv8_frintts_property =
++    DEFINE_PROP_BOOL("frintts", ARMCPU, prop_gv8_frintts, false);
++static const Property arm_cpu_gv8_specres_property =
++    DEFINE_PROP_BOOL("specres", ARMCPU, prop_gv8_specres, false);
++static const Property arm_cpu_gv8_dgh_property =
++    DEFINE_PROP_BOOL("dgh", ARMCPU, prop_gv8_dgh, false);
++
++/*
++ * Saved pointer to arm_cpu_reset_hold for the generic-v8 class.
++ * We use a static variable rather than acc->parent_phases because
++ * arm_cpu_reset_hold itself uses acc->parent_phases to call ITS parent;
++ * overwriting acc->parent_phases would create infinite recursion.
++ */
++static ResettableHoldPhase gv8_parent_hold_phase;
++
++/*
++ * aarch64_generic_v8_reset_hold - applied AFTER the parent reset.
++ *
++ * Zero-base + explicit enable: ISAR0/ISAR1 are rebuilt from scratch,
++ * only restoring fields whose property is 'on' using the real host
++ * hardware values (for KVM) or model values (for TCG).
++ */
++static void aarch64_generic_v8_reset_hold(Object *obj, ResetType type)
++{
++    ARMCPU *cpu = ARM_CPU(obj);
++    uint64_t t;
++
++    /* 1. Run arm_cpu_reset_hold (includes kvm_arm_reset_vcpu for KVM). */
++    if (gv8_parent_hold_phase) {
++        gv8_parent_hold_phase(obj, type);
++    }
++
++    /*
++     * 2. Obtain the source ISAR values for feature passthrough.
++     *
++     *    For KVM: read the real host hardware ID registers via a temporary
++     *    KVM vcpu.  cpu->isar contains A72's static model values (set by
++     *    aarch64_a72_initfn), NOT the host hardware values, because
++     *    kvm_arm_reset_vcpu does not overwrite cpu->isar with host values
++     *    for non-"host" CPU models.
++     *
++     *    For TCG: use the model values from cpu->isar (A72 baseline).
++     */
++    uint64_t h0, h1;
++    if (kvm_enabled() &&
++        kvm_arm_gv8_get_host_isar(&h0, &h1) && h0 != 0) {
++        /*
++         * Successfully read real host ISAR values via scratch KVM vcpu.
++         * The h0 != 0 guard catches kernels < 4.15 where KVM cannot
++         * expose ID registers and the values remain zero-initialized.
++         */
++    } else {
++        h0 = cpu->isar.id_aa64isar0;
++        h1 = cpu->isar.id_aa64isar1;
++    }
++
++    /* --- ID_AA64ISAR0: build from zero --- */
++    t = 0;
++    /* Default-ON: universal ARMv8 features */
++    if (cpu->prop_gv8_aes)
++        t = FIELD_DP64(t, ID_AA64ISAR0, AES,
++                       FIELD_EX64(h0, ID_AA64ISAR0, AES));
++    if (cpu->prop_gv8_sha1)
++        t = FIELD_DP64(t, ID_AA64ISAR0, SHA1,
++                       FIELD_EX64(h0, ID_AA64ISAR0, SHA1));
++    if (cpu->prop_gv8_sha512)
++        /* sha512=on: pass full host SHA2 value (1 or 2) */
++        t = FIELD_DP64(t, ID_AA64ISAR0, SHA2,
++                       FIELD_EX64(h0, ID_AA64ISAR0, SHA2));
++    else if (cpu->prop_gv8_sha2)
++        /* sha2=on (default): cap at 1 (SHA-256 only) */
++        t = FIELD_DP64(t, ID_AA64ISAR0, SHA2,
++                       MIN(FIELD_EX64(h0, ID_AA64ISAR0, SHA2), 1));
++    if (cpu->prop_gv8_crc32)
++        t = FIELD_DP64(t, ID_AA64ISAR0, CRC32,
++                       FIELD_EX64(h0, ID_AA64ISAR0, CRC32));
++    if (cpu->prop_gv8_atomic)
++        t = FIELD_DP64(t, ID_AA64ISAR0, ATOMIC,
++                       FIELD_EX64(h0, ID_AA64ISAR0, ATOMIC));
++    if (cpu->prop_gv8_rdm)
++        t = FIELD_DP64(t, ID_AA64ISAR0, RDM,
++                       FIELD_EX64(h0, ID_AA64ISAR0, RDM));
++    if (cpu->prop_gv8_dp)
++        t = FIELD_DP64(t, ID_AA64ISAR0, DP,
++                       FIELD_EX64(h0, ID_AA64ISAR0, DP));
++    /* Default-OFF: optional ISAR0 features */
++    if (cpu->prop_gv8_sha3)
++        t = FIELD_DP64(t, ID_AA64ISAR0, SHA3,
++                       FIELD_EX64(h0, ID_AA64ISAR0, SHA3));
++    if (cpu->prop_gv8_sm3)
++        t = FIELD_DP64(t, ID_AA64ISAR0, SM3,
++                       FIELD_EX64(h0, ID_AA64ISAR0, SM3));
++    if (cpu->prop_gv8_sm4)
++        t = FIELD_DP64(t, ID_AA64ISAR0, SM4,
++                       FIELD_EX64(h0, ID_AA64ISAR0, SM4));
++    if (cpu->prop_gv8_fhm)
++        t = FIELD_DP64(t, ID_AA64ISAR0, FHM,
++                       FIELD_EX64(h0, ID_AA64ISAR0, FHM));
++    if (cpu->prop_gv8_rndr)
++        t = FIELD_DP64(t, ID_AA64ISAR0, RNDR,
++                       FIELD_EX64(h0, ID_AA64ISAR0, RNDR));
++    if (cpu->prop_gv8_ts)
++        t = FIELD_DP64(t, ID_AA64ISAR0, TS,
++                       FIELD_EX64(h0, ID_AA64ISAR0, TS));
++    if (cpu->prop_gv8_tlb)
++        t = FIELD_DP64(t, ID_AA64ISAR0, TLB,
++                       FIELD_EX64(h0, ID_AA64ISAR0, TLB));
++    cpu->isar.id_aa64isar0 = t;
++
++    /* --- ID_AA64ISAR1: build from zero --- */
++    t = 0;
++    /* Default-ON: dpb */
++    if (cpu->prop_gv8_dpb2)
++        /* dpb2=on: pass full host DPB value (1 or 2) */
++        t = FIELD_DP64(t, ID_AA64ISAR1, DPB,
++                       FIELD_EX64(h1, ID_AA64ISAR1, DPB));
++    else if (cpu->prop_gv8_dpb)
++        /* dpb=on (default): cap at 1 (FEAT_DPB) */
++        t = FIELD_DP64(t, ID_AA64ISAR1, DPB,
++                       MIN(FIELD_EX64(h1, ID_AA64ISAR1, DPB), 1));
++    /* Default-OFF: optional ISAR1 features */
++    if (cpu->prop_gv8_jscvt)
++        t = FIELD_DP64(t, ID_AA64ISAR1, JSCVT,
++                       FIELD_EX64(h1, ID_AA64ISAR1, JSCVT));
++    if (cpu->prop_gv8_fcma)
++        t = FIELD_DP64(t, ID_AA64ISAR1, FCMA,
++                       FIELD_EX64(h1, ID_AA64ISAR1, FCMA));
++    if (cpu->prop_gv8_lrcpc)
++        /* cap LRCPC at 1 for compatibility with N1/RK3588/Phytium */
++        t = FIELD_DP64(t, ID_AA64ISAR1, LRCPC,
++                       MIN(FIELD_EX64(h1, ID_AA64ISAR1, LRCPC), 1));
++    if (cpu->prop_gv8_bf16)
++        t = FIELD_DP64(t, ID_AA64ISAR1, BF16,
++                       FIELD_EX64(h1, ID_AA64ISAR1, BF16));
++    if (cpu->prop_gv8_i8mm)
++        t = FIELD_DP64(t, ID_AA64ISAR1, I8MM,
++                       FIELD_EX64(h1, ID_AA64ISAR1, I8MM));
++    if (cpu->prop_gv8_sb)
++        t = FIELD_DP64(t, ID_AA64ISAR1, SB,
++                       FIELD_EX64(h1, ID_AA64ISAR1, SB));
++    if (cpu->prop_gv8_frintts)
++        t = FIELD_DP64(t, ID_AA64ISAR1, FRINTTS,
++                       FIELD_EX64(h1, ID_AA64ISAR1, FRINTTS));
++    if (cpu->prop_gv8_specres)
++        t = FIELD_DP64(t, ID_AA64ISAR1, SPECRES,
++                       FIELD_EX64(h1, ID_AA64ISAR1, SPECRES));
++    if (cpu->prop_gv8_dgh)
++        t = FIELD_DP64(t, ID_AA64ISAR1, DGH,
++                       FIELD_EX64(h1, ID_AA64ISAR1, DGH));
++    cpu->isar.id_aa64isar1 = t;
++
++    /* 3. Zero out ISAR2: future features on unknown CPUs are blocked. */
++    cpu->isar.id_aa64isar2 = 0;
++
++    /* 4. PFR1: clear SSBS (Phytium=1, RK3588/Kunpeng=0) for compat. */
++    t = cpu->isar.id_aa64pfr1;
++    t = FIELD_DP64(t, ID_AA64PFR1, SSBS, 0);
++    cpu->isar.id_aa64pfr1 = t;
++
++    /*
++     * 5. For KVM: directly write filtered ID registers via kvm_set_one_reg.
++     *    This follows the same pattern as kvm_arch_init_vcpu which directly
++     *    uses kvm_get_one_reg / kvm_set_one_reg for specific registers.
++     *    We cannot rely solely on write_list_to_kvmstate because:
++     *    - ID registers may not be in the cpreg list on all kernel versions
++     *    - Level filtering in write_list_to_kvmstate may skip them
++     *    The KVM vcpu exists at this point (kvm_arm_reset_vcpu was just called
++     *    by the parent hold phase), so kvm_set_one_reg is valid here.
++     *    Requires Linux >= 5.13 for writable ID registers; on older kernels
++     *    the ioctl will return -EINVAL which we intentionally ignore (the host
++     *    will then expose full hardware features, and the user should upgrade).
++     */
++    if (kvm_enabled()) {
++        kvm_arm_gv8_apply_isar_filters(cpu, h0, h1);
++    }
++}
++
++static void aarch64_generic_v8_class_init(ObjectClass *oc, void *data)
++{
++    ARMCPUClass *acc = ARM_CPU_CLASS(oc);
++    ResettableClass *rc = RESETTABLE_CLASS(oc);
++
++    acc->info = data;
++
++    /*
++     * Save arm_cpu_reset_hold into gv8_parent_hold_phase and install our
++     * aarch64_generic_v8_reset_hold as the new hold phase.
++     *
++     * We deliberately do NOT use resettable_class_set_parent_phases() here
++     * because that would overwrite acc->parent_phases, which arm_cpu_reset_hold
++     * itself uses to call its own parent -- causing infinite recursion.
++     */
++    gv8_parent_hold_phase = rc->phases.hold;
++    rc->phases.hold = aarch64_generic_v8_reset_hold;
++}
++
++static void aarch64_generic_v8_initfn(Object *obj)
++{
++    ARMCPU *cpu = ARM_CPU(obj);
++
++    /*
++     * Start from cortex-a72 which is the generic ARMv8.0 baseline used
++     * by both Kunpeng-920 and Phytium FTC862.  Inherits KVM target
++     * QEMU_KVM_ARM_TARGET_GENERIC_V8 from a72.
++     */
++    aarch64_a72_initfn(obj);
++
++    /*
++     * Use a neutral "software-use" MIDR (implementer=0) so the guest
++     * does not mistake this for a real hardware CPU and apply
++     * vendor-specific errata or use implementation-defined features.
++     */
++    cpu->midr = FIELD_DP64(0,     MIDR_EL1, IMPLEMENTER,  0);
++    cpu->midr = FIELD_DP64(cpu->midr, MIDR_EL1, ARCHITECTURE, 0xf);
++    cpu->midr = FIELD_DP64(cpu->midr, MIDR_EL1, PARTNUM,      'V');
++    cpu->midr = FIELD_DP64(cpu->midr, MIDR_EL1, VARIANT,      0);
++    cpu->midr = FIELD_DP64(cpu->midr, MIDR_EL1, REVISION,     0);
++
++    /* Default-ON: universal ARMv8 features */
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_aes_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_sha1_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_sha2_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_crc32_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_atomic_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_rdm_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_dp_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_dpb_property);
++    /* Default-OFF: optional ISAR0 features */
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_sha3_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_sm3_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_sm4_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_sha512_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_fhm_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_rndr_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_ts_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_tlb_property);
++    /* Default-OFF: optional ISAR1 features */
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_jscvt_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_fcma_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_lrcpc_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_dpb2_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_bf16_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_i8mm_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_sb_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_frintts_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_specres_property);
++    qdev_property_add_static(DEVICE(obj), &arm_cpu_gv8_dgh_property);
++}
++
+ static void aarch64_host_initfn(Object *obj)
+ {
+ #if defined(CONFIG_KVM)
+@@ -849,6 +1194,9 @@ static const ARMCPUInfo aarch64_cpus[] = {
+     { .name = "cortex-a53",         .initfn = aarch64_a53_initfn },
+     { .name = "max",                .initfn = aarch64_max_initfn },
+     { .name = "Kunpeng-920",        .initfn = aarch64_kunpeng_920_initfn},
++    { .name = "phytium",             .initfn = aarch64_phytium_initfn },
++    { .name = "generic-v8",         .initfn = aarch64_generic_v8_initfn,
++                                    .class_init = aarch64_generic_v8_class_init },
+ #if defined(CONFIG_KVM) || defined(CONFIG_HVF)
+     { .name = "host",               .initfn = aarch64_host_initfn },
+ #endif
+diff --git a/target/arm/kvm.c b/target/arm/kvm.c
+index da30bdbb23..779e249cca 100644
+--- a/target/arm/kvm.c
++++ b/target/arm/kvm.c
+@@ -2468,3 +2468,67 @@ void kvm_arm_enable_mte(Object *cpuobj, Error **errp)
+         cpu->kvm_mte = true;
+     }
+ }
++
++/*
++ * kvm_arm_gv8_get_host_isar - Read real host hardware ISAR values.
++ *
++ * The generic-v8 CPU model inherits A72's static ISAR values in initfn,
++ * but for KVM we need the actual host hardware values so that passthrough
++ * properties (sha3=on, sm3=on, etc.) can extract real feature bits.
++ *
++ * Uses the same kvm_arm_get_host_cpu_features() mechanism as -cpu host,
++ * which creates a temporary KVM VM/vcpu to read the host's ID registers.
++ * Results are cached so the temp VM is created at most once.
++ */
++bool kvm_arm_gv8_get_host_isar(uint64_t *isar0, uint64_t *isar1)
++{
++    if (!arm_host_cpu_features.dtb_compatible) {
++        if (!kvm_arm_get_host_cpu_features(&arm_host_cpu_features)) {
++            return false;
++        }
++    }
++    *isar0 = arm_host_cpu_features.isar.id_aa64isar0;
++    *isar1 = arm_host_cpu_features.isar.id_aa64isar1;
++    return true;
++}
++
++/*
++ * kvm_arm_gv8_apply_isar_filters - Write generic-v8 filtered ISAR values
++ * directly to KVM using kvm_set_one_reg.
++ *
++ * This follows the same pattern as kvm_arch_init_vcpu() which uses
++ * kvm_get_one_reg(ARM64_SYS_REG(...)) directly rather than going through
++ * the cpreg list mechanism.  Errors from kvm_set_one_reg are intentionally
++ * ignored: on kernels that do not support writable ID registers (< 5.13)
++ * the ioctl returns -EINVAL and the VM continues with host hardware values.
++ */
++void kvm_arm_gv8_apply_isar_filters(ARMCPU *cpu, uint64_t host_isar0,
++                                    uint64_t host_isar1)
++{
++    CPUState *cs = CPU(cpu);
++    int ret;
++
++    qemu_log("generic-v8: host  ISAR0=0x%016" PRIx64
++             " ISAR1=0x%016" PRIx64 "\n", host_isar0, host_isar1);
++    qemu_log("generic-v8: filt  ISAR0=0x%016" PRIx64
++             " ISAR1=0x%016" PRIx64 "\n",
++             cpu->isar.id_aa64isar0, cpu->isar.id_aa64isar1);
++
++    /* ID_AA64ISAR0_EL1: 3_0_c0_c6_0 */
++    ret = kvm_set_one_reg(cs, ARM64_SYS_REG(3, 0, 0, 6, 0),
++                          &cpu->isar.id_aa64isar0);
++    qemu_log("generic-v8: set ISAR0 -> %s\n",
++             ret == 0 ? "OK" : strerror(-ret));
++
++    /* ID_AA64ISAR1_EL1: 3_0_c0_c6_1 */
++    ret = kvm_set_one_reg(cs, ARM64_SYS_REG(3, 0, 0, 6, 1),
++                          &cpu->isar.id_aa64isar1);
++    qemu_log("generic-v8: set ISAR1 -> %s\n",
++             ret == 0 ? "OK" : strerror(-ret));
++
++    /* ID_AA64ISAR2_EL1: 3_0_c0_c6_2 */
++    ret = kvm_set_one_reg(cs, ARM64_SYS_REG(3, 0, 0, 6, 2),
++                          &cpu->isar.id_aa64isar2);
++    qemu_log("generic-v8: set ISAR2 -> %s\n",
++             ret == 0 ? "OK" : strerror(-ret));
++}
+diff --git a/target/arm/kvm_arm.h b/target/arm/kvm_arm.h
+index 05c3de8cd4..34e127fd61 100644
+--- a/target/arm/kvm_arm.h
++++ b/target/arm/kvm_arm.h
+@@ -221,6 +221,29 @@ int kvm_arm_set_irq(int cpu, int irqtype, int irq, int level);
+ 
+ void kvm_arm_enable_mte(Object *cpuobj, Error **errp);
+ 
++/**
++ * kvm_arm_gv8_apply_isar_filters:
++ * @cpu: ARMCPU
++ *
++ * For the generic-v8 CPU model: directly write the filtered ISAR values
++ * (id_aa64isar0, id_aa64isar1, id_aa64isar2) to KVM via kvm_set_one_reg.
++ * Called from the CPU reset hold phase after feature masks are applied.
++ * Requires Linux >= 5.13 writable ID register support; errors are ignored
++ * so the VM continues even if the kernel does not support writes.
++ */
++void kvm_arm_gv8_apply_isar_filters(ARMCPU *cpu, uint64_t host_isar0,
++                                    uint64_t host_isar1);
++
++/**
++ * kvm_arm_gv8_get_host_isar:
++ * @isar0: output for host ID_AA64ISAR0_EL1
++ * @isar1: output for host ID_AA64ISAR1_EL1
++ *
++ * Read the real host hardware ISAR values via a temporary KVM vcpu.
++ * Returns true on success.
++ */
++bool kvm_arm_gv8_get_host_isar(uint64_t *isar0, uint64_t *isar1);
++
+ #else
+ 
+ /*
+@@ -300,6 +323,18 @@ static inline void kvm_arm_enable_mte(Object *cpuobj, Error **errp)
+     g_assert_not_reached();
+ }
+ 
++static inline void kvm_arm_gv8_apply_isar_filters(ARMCPU *cpu,
++                                                   uint64_t host_isar0,
++                                                   uint64_t host_isar1)
++{
++    /* No-op without KVM */
++}
++
++static inline bool kvm_arm_gv8_get_host_isar(uint64_t *isar0, uint64_t *isar1)
++{
++    return false;
++}
++
+ #endif
+ 
+ #endif
