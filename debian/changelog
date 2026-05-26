@@ -1,3 +1,127 @@
+pve-qemu-kvm (11.0.0-3) trixie; urgency=medium
+
+  * revert "qcow2: Fix corruption on discard during write with COW", needs
+    further investigation to ensure it is a complete fix, to avoid trading
+    theoretical issues with real ones.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 21 May 2026 11:38:09 +0200
+
+pve-qemu-kvm (11.0.0-2) trixie; urgency=medium
+
+  * fix regression when using fuse export for EFI enroll.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 12 May 2026 23:40:18 +0200
+
+pve-qemu-kvm (11.0.0-1) trixie; urgency=medium
+
+  * update submodule and patches to QEMU 11.0.0.
+
+  * drop legacy QEMU machine version 4.0, which is below the oldest still
+    supported machine version 6.0 for Proxmox VE 9.
+
+  * update supported CPU models for amd64/x86_64 adding Intel DiamondRapids
+    and providing new versions for some existing Intel based models.
+
+  * cherry-pick stable fixes for QEMU 11.0.0.
+
+  * add fix for regression when using fuse export for swtpm.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 05 May 2026 17:06:01 +0200
+
+pve-qemu-kvm (10.2.1-2) trixie; urgency=medium
+
+  * build system: make: properly use DEB_HOST_ARCH variable instead of
+    DEB_BUILD_ARCH for .deb package names and upload target.
+
+  * build system: d/control: drop redundant library dependencies covered by
+    shlibs:Depends variable.
+
+  * fix misleading IO wait and pressure stall information (PSI) accounting
+    with io_uring-based event loop. A drive with IO thread being idle resulted
+    in nearly 100% IO pressure. This is resolved by telling io_uring to not
+    count blocking waits towards the IO wait metric when the event loop is
+    effectively idle.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 04 May 2026 11:52:48 +0200
+
+pve-qemu-kvm (10.2.1-1) trixie; urgency=medium
+
+  * update QEMU and downstream patches for 10.2.1 release.
+
+  * cherry-pick various stable fixes to improve 10.2 experience.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 16 Mar 2026 23:05:33 +0100
+
+pve-qemu-kvm (10.1.2-7) trixie; urgency=medium
+
+  * fix #7222: add fix for crash caused by zero write during sync drive
+    mirror.
+
+  * fix #7197: add fix to avoid misaligned BLKZEROOUT casuing a hard error.
+
+  * generate and ship static list of CPU models for x86-64 and aarch64.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 17 Feb 2026 19:22:05 +0100
+
+pve-qemu-kvm (10.1.2-6) trixie; urgency=medium
+
+  * fix /usr/bin/kvm symlink to point to actual host architecture.
+
+  * generate list of supported aarch64 machines during build and ship as JSON
+    alongside the existing list for x86-64/amd64 machines in the resulting
+    package.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 04 Feb 2026 11:05:36 +0100
+
+pve-qemu-kvm (10.1.2-5) trixie; urgency=medium
+
+  * cherry-pick fix for io_uring issue to unbreak backup with TPM disk
+    potentially getting stuck.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 22 Dec 2025 10:22:35 +0100
+
+pve-qemu-kvm (10.1.2-4) trixie; urgency=medium
+
+  * fix #7033: backport fixes for write zeroes request alignment to fix qcow2
+    creation on LVM.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 19 Nov 2025 17:36:08 +0100
+
+pve-qemu-kvm (10.1.2-3) trixie; urgency=medium
+
+  * cherry-pick fix for a regression with VNC clipboard breaking mouse pointer
+    in Windows guests.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 17 Nov 2025 16:42:03 +0100
+
+pve-qemu-kvm (10.1.2-2) trixie; urgency=medium
+
+  * enable FUSE support in preparation to allow FUSE exports of, e.g.,
+    qcow2-formatted TPM state volumes via qemu-storage-daemon.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 13 Nov 2025 23:55:54 +0100
+
+pve-qemu-kvm (10.1.2-1) trixie; urgency=medium
+
+  * fix #6810: fix a potential deadlock upon TMF request cancelling with
+    VirtIO SCSI
+
+  * update QEMU and downstream patches for 10.1.2 stable release.
+
+  * cherry pick fix for VFIO regression affecting v10.1, which, e.g., could
+    affect some GPU passthrough setups.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 21 Oct 2025 15:55:12 +0200
+
+pve-qemu-kvm (10.1.0-1) trixie; urgency=medium
+
+  * update QEMU and downstream patches for 10.1.0 release.
+
+  * cherry-pick stable fixes for QEMU 10.1.0, e.g. for live-migration
+    compatibility improvements.
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 03 Oct 2025 22:00:56 +0200
+
 pve-qemu-kvm (10.0.2-4) trixie; urgency=medium
 
   * savevm-async: reuse migration blocker check for snapshots/hibernation to
