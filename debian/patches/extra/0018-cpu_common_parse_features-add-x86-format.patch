@@ -1,0 +1,17 @@
+diff --git a/hw/core/cpu-common.c b/hw/core/cpu-common.c
+index 51a3b84afd..1e85d20d14 100644
+--- a/hw/core/cpu-common.c
++++ b/hw/core/cpu-common.c
+@@ -174,6 +174,12 @@ static void cpu_common_parse_features(const char *typename, char *features,
+             prop->property = g_strdup(featurestr);
+             prop->value = g_strdup(val);
+             qdev_prop_register_global(prop);
++        } else if (featurestr[0] == '+' || featurestr[0] == '-') {
++            GlobalProperty *prop = g_new0(typeof(*prop), 1);
++            prop->driver = typename;
++            prop->property = g_strdup(featurestr + 1);
++            prop->value = g_strdup(featurestr[0] == '+' ? "on" : "off");
++            qdev_prop_register_global(prop);
+         } else {
+             error_setg(errp, "Expected key=value format, found %s.",
+                        featurestr);

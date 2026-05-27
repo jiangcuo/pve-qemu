@@ -1,0 +1,25 @@
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index c6fd1dc00e..4d2aba576b 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -6642,6 +6642,20 @@ static const X86CPUDefinition builtin_x86_defs[] = {
+                   { /* end of list */ }
+               },
+             },
++            { .version = 3,
++              .props = (PropValue[]) {
++                  { "xsaves", "off" },
++                  { "perfctr-core", "on" },
++                  { "clzero", "on" },
++                  { "xsaveerptr", "on" },
++                  { "aes", "on" },
++                  { "pclmulqdq", "on" },
++                  { "sha-ni", "on" },
++                  { "model-id",
++                      "Hygon Dhyana-v3 processor" },
++                  { /* end of list */ }
++              },
++            },
+             { /* end of list */ }
+         }
+     },

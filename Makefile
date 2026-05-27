@@ -18,7 +18,7 @@ all: $(DEBS)
 .PHONY: submodule
 submodule:
 ifeq ($(shell test -f "$(SRCDIR)/configure" && echo 1 || echo 0), 0)
-	git submodule update --init --recursive
+	git submodule update --init --recursive --depth=1
 	cd $(SRCDIR); meson subprojects download
 endif
 
@@ -34,7 +34,6 @@ PC_BIOS_FW_PURGE_LIST_IN = \
 	u-boot.e500 \
 	qemu_vga.ndrv \
 	slof.bin \
-	opensbi-riscv.*-generic-fw_dynamic.bin \
 
 BLOB_PURGE_SED_CMDS = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "/$(FILE)/d")
 BLOB_PURGE_FILTER = $(foreach FILE,$(PC_BIOS_FW_PURGE_LIST_IN),-e "$(FILE)")
@@ -57,7 +56,7 @@ $(BUILDDIR): submodule
 .PHONY: deb kvm
 deb kvm: $(DEBS)
 $(DEBS) &: $(BUILDDIR)
-	cd $(BUILDDIR); dpkg-buildpackage -b -us -uc
+	cd $(BUILDDIR); dpkg-buildpackage -b -us -uc -a$(DEB_HOST_ARCH)
 	lintian $(DEBS)
 
 sbuild: $(DSC)

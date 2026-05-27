@@ -73,7 +73,7 @@ while (my $line = <STDIN>) {
         if ($model =~ m/^(486|pentium(2|3)?)-v1$/) {
             $cpu_models->{$model} = 'GenuineIntel';
             next;
-        } elsif ($model =~ m/^(a64fx|cortex-|neoverse-).*$/) {
+        } elsif ($model =~ m/^(a64fx|Kunpeng-|phytium|cortex-|neoverse-).*$/) {
             $cpu_models->{$model} = 'ARM';
             next;
         }
@@ -88,8 +88,12 @@ while (my $line = <STDIN>) {
         # alias will be resolved later
         $aliases->{$model} = $1;
         next;
-    } elsif ($info =~ m/^(Hygon|YongFeng|Zhaoxin)/) {
-        next; # skip
+    } elsif ($info =~ m/^(Hygon|Dhyana)/) {
+        $cpu_models->{$model} = 'Hygon';
+        next;
+    } elsif ($info =~ m/^(Zhaoxin|YongFeng)/) {
+        $cpu_models->{$model} = 'Zhaoxin';
+        next;
     } elsif ($info =~ m/^AMD/) {
         $cpu_models->{$model} = 'AuthenticAMD';
         next;

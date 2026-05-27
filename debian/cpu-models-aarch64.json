@@ -1,4 +1,5 @@
 {
+   "Kunpeng-920" : "ARM",
    "a64fx" : "ARM",
    "cortex-a35" : "ARM",
    "cortex-a53" : "ARM",
@@ -11,5 +12,6 @@
    "max" : "default",
    "neoverse-n1" : "ARM",
    "neoverse-n2" : "ARM",
-   "neoverse-v1" : "ARM"
+   "neoverse-v1" : "ARM",
+   "phytium" : "ARM"
 }

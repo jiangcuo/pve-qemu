@@ -1,3 +1,9 @@
+pve-qemu-kvm (11.0.0-3+pxvirt1) trixie; urgency=medium
+
+  * Add pxvirt patch
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Wed, 27 May 2026 01:21:28 +0000
+
 pve-qemu-kvm (11.0.0-3) trixie; urgency=medium
 
   * revert "qcow2: Fix corruption on discard during write with COW", needs

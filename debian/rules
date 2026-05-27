@@ -13,9 +13,12 @@ flagfile := $(destdir)/usr/share/kvm/recognized-CPUID-flags-x86_64
 
 machine_file_x86_64 := $(destdir)/usr/share/kvm/machine-versions-x86_64.json
 machine_file_aarch64 := $(destdir)/usr/share/kvm/machine-versions-aarch64.json
+machinefile := $(destdir)/usr/share/kvm/machine-versions.json
 
 cpu_models_file_x86_64 := $(destdir)/usr/share/kvm/cpu-models-x86_64.json
 cpu_models_file_aarch64 := $(destdir)/usr/share/kvm/cpu-models-aarch64.json
+
+
 
 # default QEMU out-of-tree build directory is ./build
 BUILDDIR=build
@@ -46,7 +49,7 @@ endif
 	    --localstatedir=/var \
 	    --prefix=/usr \
 	    --sysconfdir=/etc \
-	    --target-list=x86_64-softmmu,aarch64-softmmu \
+	    --target-list=x86_64-softmmu,aarch64-softmmu,s390x-softmmu,ppc64-softmmu,riscv64-softmmu,loongarch64-softmmu,mips64el-softmmu \
 	    --with-suffix="kvm" \
 	    --with-pkgversion="${DEB_SOURCE}_${DEB_VERSION_UPSTREAM_REVISION}" \
 	    --audio-drv-list="alsa" \
@@ -128,7 +131,11 @@ install: build
 	# Supported machine versions are static for a given QEMU binary.
 	$(destdir)/usr/bin/qemu-system-x86_64 -machine help | ./debian/parse-machines.pl > $(machine_file_x86_64)
 	$(destdir)/usr/bin/qemu-system-aarch64 -machine help | ./debian/parse-machines.pl > $(machine_file_aarch64)
-
+	# For old qemu-server version
+	$(destdir)/usr/bin/qemu-system-x86_64 -machine help > $(CURDIR)/machine.list
+	$(destdir)/usr/bin/qemu-system-aarch64 -machine help >> $(CURDIR)/machine.list
+	cat $(CURDIR)/machine.list | ./debian/parse-machines.pl > $(machinefile)
+	
 	# Supported CPU models are static for a given QEMU binary.
 	$(destdir)/usr/bin/qemu-system-x86_64 -cpu help | ./debian/parse-cpu-models.pl > $(cpu_models_file_x86_64)
 	$(destdir)/usr/bin/qemu-system-aarch64 -cpu help | ./debian/parse-cpu-models.pl > $(cpu_models_file_aarch64)
