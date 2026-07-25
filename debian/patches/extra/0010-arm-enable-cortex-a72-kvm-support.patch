@@ -1,8 +1,8 @@
 diff --git a/hw/arm/virt.c b/hw/arm/virt.c
-index d1f94a4079..b3e0f567e6 100644
+index 50bfb3653e..aef838b286 100644
 --- a/hw/arm/virt.c
 +++ b/hw/arm/virt.c
-@@ -3148,6 +3148,8 @@ static void virt_machine_class_init(ObjectClass *oc, void *data)
+@@ -3153,6 +3153,8 @@ static void virt_machine_class_init(ObjectClass *oc, void *data)
          ARM_CPU_TYPE_NAME("cortex-a53"),
          ARM_CPU_TYPE_NAME("cortex-a57"),
          ARM_CPU_TYPE_NAME("Kunpeng-920"),
@@ -12,10 +12,10 @@ index d1f94a4079..b3e0f567e6 100644
          ARM_CPU_TYPE_NAME("host"),
  #endif /* CONFIG_KVM || CONFIG_HVF */
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index a8177c6c2e..95f91910bd 100644
+index 28342d6efc..0aaf2be16d 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
-@@ -1095,6 +1095,47 @@ struct ArchCPU {
+@@ -1095,6 +1095,58 @@ struct ArchCPU {
      bool prop_pauth_qarma5;
      bool prop_lpa2;
  
@@ -60,14 +60,25 @@ index a8177c6c2e..95f91910bd 100644
 +    bool prop_gv8_specres;  /* SPECRES=1 FEAT_SPECRES (A710/N2) */
 +    bool prop_gv8_dgh;      /* DGH=1 FEAT_DGH (V1/N2) */
 +
++    /*
++     * Saved filtered ISAR values for generic-v8 model.
++     * After reset, the ISAR filter is applied to KVM.  During migration
++     * load, source cpreg values overwrite cpu->isar, so we must re-apply
++     * the filter from these saved copies in kvm_arm_cpu_post_load().
++     */
++    bool gv8_isar_filtered;
++    uint64_t gv8_filt_isar0;
++    uint64_t gv8_filt_isar1;
++    uint64_t gv8_filt_isar2;
++
      /* DCZ blocksize, in log_2(words), ie low 4 bits of DCZID_EL0 */
      uint8_t dcz_blocksize;
      /* GM blocksize, in log_2(words), ie low 4 bits of GMID_EL0 */
 diff --git a/target/arm/cpu64.c b/target/arm/cpu64.c
-index 2e6b078acb..bb522c557e 100644
+index ed22e472ce..114e637d85 100644
 --- a/target/arm/cpu64.c
 +++ b/target/arm/cpu64.c
-@@ -808,6 +808,351 @@ static void aarch64_kunpeng_920_initfn(Object *obj)
+@@ -809,6 +809,375 @@ static void aarch64_kunpeng_920_initfn(Object *obj)
  }
  
  
@@ -340,7 +351,23 @@ index 2e6b078acb..bb522c557e 100644
 +     *    will then expose full hardware features, and the user should upgrade).
 +     */
 +    if (kvm_enabled()) {
++        /* Save filtered values before writing to KVM.  These are needed
++         * by kvm_arm_cpu_post_load() to re-apply after migration load
++         * overwrites cpu->isar with source values.
++         */
++        cpu->gv8_isar_filtered = true;
++        cpu->gv8_filt_isar0 = cpu->isar.id_aa64isar0;
++        cpu->gv8_filt_isar1 = cpu->isar.id_aa64isar1;
++        cpu->gv8_filt_isar2 = cpu->isar.id_aa64isar2;
++
 +        kvm_arm_gv8_apply_isar_filters(cpu, h0, h1);
++        /*
++         * Re-sync the cpreg cache from KVM so that the filtered ID
++         * register values are stored in cpreg_values[].  Without this,
++         * write_list_to_kvmstate() on the first vCPU run would write
++         * back the stale (pre-filter) values and undo the masking.
++         */
++        write_kvmstate_to_list(cpu);
 +    }
 +}
 +
@@ -373,6 +400,14 @@ index 2e6b078acb..bb522c557e 100644
 +     * QEMU_KVM_ARM_TARGET_GENERIC_V8 from a72.
 +     */
 +    aarch64_a72_initfn(obj);
++
++    /*
++     * Disable PMU by default for migration safety.  Not all KVM hosts
++     * support PMU (e.g. Apple nested virtualization), so including it
++     * in the baseline would break live migration to such targets.
++     * Users who know all their hosts support PMU can re-enable with pmu=on.
++     */
++    unset_feature(&cpu->env, ARM_FEATURE_PMU);
 +
 +    /*
 +     * Use a neutral "software-use" MIDR (implementer=0) so the guest
@@ -419,7 +454,7 @@ index 2e6b078acb..bb522c557e 100644
  static void aarch64_host_initfn(Object *obj)
  {
  #if defined(CONFIG_KVM)
-@@ -849,6 +1194,9 @@ static const ARMCPUInfo aarch64_cpus[] = {
+@@ -850,6 +1219,9 @@ static const ARMCPUInfo aarch64_cpus[] = {
      { .name = "cortex-a53",         .initfn = aarch64_a53_initfn },
      { .name = "max",                .initfn = aarch64_max_initfn },
      { .name = "Kunpeng-920",        .initfn = aarch64_kunpeng_920_initfn},
@@ -430,10 +465,32 @@ index 2e6b078acb..bb522c557e 100644
      { .name = "host",               .initfn = aarch64_host_initfn },
  #endif
 diff --git a/target/arm/kvm.c b/target/arm/kvm.c
-index da30bdbb23..779e249cca 100644
+index e1b87116db..0a2f28002e 100644
 --- a/target/arm/kvm.c
 +++ b/target/arm/kvm.c
-@@ -2468,3 +2468,67 @@ void kvm_arm_enable_mte(Object *cpuobj, Error **errp)
+@@ -984,6 +984,21 @@ void kvm_arm_cpu_post_load(ARMCPU *cpu)
+         cpu->kvm_vtime = *kvm_arm_get_cpreg_ptr(cpu, KVM_REG_ARM_TIMER_CNT);
+         cpu->kvm_vtime_dirty = true;
+     }
++
++    /*
++     * Re-apply generic-v8 ISAR filters after migration load.
++     * Migration overwrites cpu->isar and cpreg_values with source
++     * values, undoing the filter applied during reset.  Restore the
++     * saved filtered ISAR values, write them to KVM, and re-sync
++     * the cpreg cache.
++     */
++    if (cpu->gv8_isar_filtered) {
++        cpu->isar.id_aa64isar0 = cpu->gv8_filt_isar0;
++        cpu->isar.id_aa64isar1 = cpu->gv8_filt_isar1;
++        cpu->isar.id_aa64isar2 = cpu->gv8_filt_isar2;
++        kvm_arm_gv8_apply_isar_filters(cpu, 0, 0);
++        write_kvmstate_to_list(cpu);
++    }
+ }
+ 
+ void kvm_arm_reset_vcpu(ARMCPU *cpu)
+@@ -2468,3 +2483,67 @@ void kvm_arm_enable_mte(Object *cpuobj, Error **errp)
          cpu->kvm_mte = true;
      }
  }

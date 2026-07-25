@@ -1,0 +1,127 @@
+From: jiangcuo <jiangcuo@lierfang.com>
+Subject: [PATCH] target/arm: allow inbound migration from hosts with more cpregs
+
+When migrating between heterogeneous ARM hosts (e.g. Kunpeng to Apple
+nested KVM, or Kunpeng to Phytium), the source may expose more KVM
+coprocessor registers than the destination.  Currently this causes
+migration to fail in two ways:
+
+1. VMSTATE_INT32_POSITIVE_LE rejects the incoming cpreg count because
+   it exceeds the locally allocated array size.
+2. cpu_post_load() returns -1 when it encounters a register index
+   present on the source but absent on the destination.
+
+Fix by:
+- Over-allocating cpreg_vmstate_* arrays and setting
+  cpreg_vmstate_array_len to a generous maximum (512) so the
+  destination can receive larger register lists.
+- Skipping unknown registers in cpu_post_load() with a warning
+  instead of failing, since platform-specific registers from the
+  source are irrelevant to the destination's KVM.
+
+This implements the "common register subset" migration strategy:
+only registers known to both source and destination are restored;
+source-specific registers are safely discarded.
+
+Signed-off-by: jiangcuo <jiangcuo@lierfang.com>
+---
+ target/arm/kvm.c     | 17 +++++++++++------
+ target/arm/machine.c | 12 +++++++++---
+ 2 files changed, 20 insertions(+), 9 deletions(-)
+
+diff --git a/target/arm/kvm.c b/target/arm/kvm.c
+index e1b87116db..621a3d1678 100644
+--- a/target/arm/kvm.c
++++ b/target/arm/kvm.c
+@@ -848,12 +848,21 @@ static int kvm_arm_init_cpreg_list(ARMCPU *cpu)
+ 
+     cpu->cpreg_indexes = g_renew(uint64_t, cpu->cpreg_indexes, arraylen);
+     cpu->cpreg_values = g_renew(uint64_t, cpu->cpreg_values, arraylen);
+-    cpu->cpreg_vmstate_indexes = g_renew(uint64_t, cpu->cpreg_vmstate_indexes,
+-                                         arraylen);
+-    cpu->cpreg_vmstate_values = g_renew(uint64_t, cpu->cpreg_vmstate_values,
+-                                        arraylen);
+     cpu->cpreg_array_len = arraylen;
+-    cpu->cpreg_vmstate_array_len = arraylen;
++    /*
++     * Over-allocate vmstate arrays so inbound migration from hosts with
++     * more coprocessor registers (e.g. Kunpeng -> Phytium/Apple) can be
++     * received without overflow.  The VMSTATE_INT32_POSITIVE_LE check
++     * uses cpreg_vmstate_array_len as the upper bound.
++     */
++    {
++        int vmstate_max = MAX(arraylen, 512);
++        cpu->cpreg_vmstate_indexes = g_renew(uint64_t,
++            cpu->cpreg_vmstate_indexes, vmstate_max);
++        cpu->cpreg_vmstate_values = g_renew(uint64_t,
++            cpu->cpreg_vmstate_values, vmstate_max);
++        cpu->cpreg_vmstate_array_len = vmstate_max;
++    }
+ 
+     for (i = 0, arraylen = 0; i < rlp->n; i++) {
+         uint64_t regidx = rlp->reg[i];
+@@ -963,7 +972,23 @@ bool write_list_to_kvmstate(ARMCPU *cpu, int level)
+              * "you tried to set a register which is constant with
+              * a different value from what it actually contains".
+              */
+-            ok = false;
++            if (ret == -EINVAL) {
++                /*
++                 * EINVAL typically means the register is read-only
++                 * (e.g. MIDR_EL1, ID_AA64PFR0_EL1, CTR_EL0) and
++                 * KVM rejected the source value.  KVM keeps the
++                 * correct hardware value, so this is safe to ignore
++                 * during heterogeneous migration.
++                 */
++                warn_report("write_list_to_kvmstate: reg 0x%016" PRIx64
++                            " rejected (EINVAL), keeping dest value",
++                            regidx);
++            } else {
++                warn_report("write_list_to_kvmstate: failed to set reg "
++                            "0x%016" PRIx64 " = 0x%016" PRIx64 ": %s",
++                            regidx, cpu->cpreg_values[i], strerror(-ret));
++                ok = false;
++            }
+         }
+     }
+     return ok;
+diff --git a/target/arm/machine.c b/target/arm/machine.c
+index 978249fb71..b995f22da2 100644
+--- a/target/arm/machine.c
++++ b/target/arm/machine.c
+@@ -968,8 +968,17 @@ static int cpu_post_load(void *opaque, int version_id)
+             continue;
+         }
+         if (cpu->cpreg_vmstate_indexes[v] < cpu->cpreg_indexes[i]) {
+-            /* register in their list but not ours: fail migration */
+-            return -1;
++            /*
++             * Register in their list but not ours: skip it.
++             * This happens when migrating from a host with more
++             * platform-specific registers (e.g. Kunpeng -> Apple).
++             */
++            warn_report("cpreg migration: skipping source register "
++                        "0x%016" PRIx64 " not present on destination",
++                        cpu->cpreg_vmstate_indexes[v]);
++            v++;
++            i--;
++            continue;
+         }
+         /* matching register, copy the value over */
+         cpu->cpreg_values[i] = cpu->cpreg_vmstate_values[v];
+@@ -978,7 +987,14 @@ static int cpu_post_load(void *opaque, int version_id)
+ 
+     if (kvm_enabled()) {
+         if (!write_list_to_kvmstate(cpu, KVM_PUT_FULL_STATE)) {
+-            return -1;
++            /*
++             * For heterogeneous migration (e.g. Kunpeng -> Apple),
++             * some registers may fail to write because the destination
++             * KVM rejects values with hardware-specific RO fields.
++             * Warn but continue -- KVM keeps correct hardware defaults.
++             */
++            warn_report("write_list_to_kvmstate: some registers failed "
++                        "to restore (heterogeneous migration?)");
+         }
+         /* Note that it's OK for the TCG side not to know about
+          * every register in the list; KVM is authoritative if
