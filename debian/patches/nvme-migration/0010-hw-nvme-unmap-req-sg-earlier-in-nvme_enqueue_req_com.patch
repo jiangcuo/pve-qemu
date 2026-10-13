@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Date: Thu, 11 Jun 2026 20:08:38 +0200
+Subject: [PATCH] hw/nvme: unmap req->sg earlier in nvme_enqueue_req_completion
+
+Instead of unmapping req->sg in nvme_post_cqes(), we can do it earlier in
+nvme_enqueue_req_completion(). When req completion is enqueued we don't
+need to access req->sg anymore. We only care about req->sq, req->cqe and
+req->status.
+
+Reviewed-by: Klaus Jensen <k.jensen@samsung.com>
+Acked-by: Stefan Hajnoczi <stefanha@redhat.com>
+Signed-off-by: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Signed-off-by: Klaus Jensen <k.jensen@samsung.com>
+(cherry picked from commit 4e868b806e5149a9adb1073240055a7051cd5ec4)
+---
+ hw/nvme/ctrl.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/hw/nvme/ctrl.c b/hw/nvme/ctrl.c
+index 2e5a4de92b..37c2ac8e71 100644
+--- a/hw/nvme/ctrl.c
++++ b/hw/nvme/ctrl.c
+@@ -1544,7 +1544,6 @@ static void nvme_post_cqes(void *opaque)
+         QTAILQ_REMOVE(&cq->req_list, req, entry);
+ 
+         nvme_inc_cq_tail(cq);
+-        nvme_sg_unmap(&req->sg);
+ 
+         if (QTAILQ_EMPTY(&sq->req_list) && !nvme_sq_empty(sq)) {
+             qemu_bh_schedule(sq->bh);
+@@ -1574,6 +1573,8 @@ static void nvme_enqueue_req_completion(NvmeCQueue *cq, NvmeRequest *req)
+                                       req->status, req->cmd.opcode);
+     }
+ 
++    nvme_sg_unmap(&req->sg);
++
+     QTAILQ_REMOVE(&req->sq->out_req_list, req, entry);
+     QTAILQ_INSERT_TAIL(&cq->req_list, req, entry);
+ 

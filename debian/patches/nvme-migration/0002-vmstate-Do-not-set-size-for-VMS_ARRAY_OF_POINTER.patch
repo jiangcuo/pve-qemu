@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Peter Xu <peterx@redhat.com>
+Date: Wed, 1 Apr 2026 16:28:36 -0400
+Subject: [PATCH] vmstate: Do not set size for VMS_ARRAY_OF_POINTER
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When VMS_ARRAY_OF_POINTER is specified, it means the vmstate field is an
+array of pointers.
+
+The size of the element is not relevant to whatever it is stored inside: it
+is always the host pointer size.
+
+Let's reserve the "size" field in this case for future use, update
+vmstate_size() so as to make it still work for array of pointers properly.
+
+When at this, provide rich documentation on how size / size_offset works in
+vmstate.
+
+Reviewed-by: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Reviewed-by: Fabiano Rosas <farosas@suse.de>
+Reviewed-by: Philippe Mathieu-Daudé <philmd@linaro.org>
+Signed-off-by: Peter Xu <peterx@redhat.com>
+Reviewed-by: Juraj Marcin <jmarcin@redhat.com>
+Link: https://lore.kernel.org/qemu-devel/20260401202844.673494-4-peterx@redhat.com
+Signed-off-by: Fabiano Rosas <farosas@suse.de>
+(cherry picked from commit 5aa4714e9d01be2d17282b223f01a492a5c9ea72)
+---
+ include/migration/vmstate.h | 19 ++++++++++++++++---
+ migration/savevm.c          |  3 +++
+ migration/vmstate.c         | 10 +++++++++-
+ 3 files changed, 28 insertions(+), 4 deletions(-)
+
+diff --git a/include/migration/vmstate.h b/include/migration/vmstate.h
+index 164ae6ad82..73e1a52d0a 100644
+--- a/include/migration/vmstate.h
++++ b/include/migration/vmstate.h
+@@ -168,11 +168,26 @@ struct VMStateField {
+     const char *name;
+     const char *err_hint;
+     size_t offset;
++
++    /*
++     * @size or @size_offset specifies the size of the element embeded in
++     * the field.  Only one of them should be present never both.  When
++     * @size_offset is used together with VMS_VBUFFER, it means the size is
++     * dynamic calculated instead of a constant.
++     *
++     * When the field is an array of any type, this stores the size of one
++     * element of the array.
++     *
++     * NOTE: even if VMS_POINTER or VMS_ARRAY_OF_POINTER may be specified,
++     * this parameter always reflects the real size of the objects that a
++     * pointer point to.
++     */
+     size_t size;
++    size_t size_offset;
++
+     size_t start;
+     int num;
+     size_t num_offset;
+-    size_t size_offset;
+     const VMStateInfo *info;
+     enum VMStateFlags flags;
+     const VMStateDescription *vmsd;
+@@ -503,7 +518,6 @@ extern const VMStateInfo vmstate_info_qlist;
+     .version_id = (_version),                                        \
+     .num        = (_num),                                            \
+     .info       = &(_info),                                          \
+-    .size       = sizeof(_type *),                                   \
+     .flags      = VMS_ARRAY|VMS_ARRAY_OF_POINTER,                    \
+     .offset     = vmstate_offset_array(_state, _field, _type *, _num), \
+ }
+@@ -513,7 +527,6 @@ extern const VMStateInfo vmstate_info_qlist;
+     .version_id = (_v),                                              \
+     .num        = (_n),                                              \
+     .vmsd       = &(_vmsd),                                          \
+-    .size       = sizeof(_type *),                                    \
+     .flags      = VMS_ARRAY|VMS_STRUCT|VMS_ARRAY_OF_POINTER,         \
+     .offset     = vmstate_offset_array(_s, _f, _type*, _n),          \
+ }
+diff --git a/migration/savevm.c b/migration/savevm.c
+index ce158c3512..5049d3fabf 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -868,6 +868,9 @@ static void vmstate_check(const VMStateDescription *vmsd)
+ 
+     if (field) {
+         while (field->name) {
++            if (field->flags & VMS_ARRAY_OF_POINTER) {
++                assert(field->size == 0);
++            }
+             if (field->flags & (VMS_STRUCT | VMS_VSTRUCT)) {
+                 /* Recurse to sub structures */
+                 vmstate_check(field->vmsd);
+diff --git a/migration/vmstate.c b/migration/vmstate.c
+index 37316d2833..3d4d31197e 100644
+--- a/migration/vmstate.c
++++ b/migration/vmstate.c
+@@ -107,13 +107,21 @@ static int vmstate_n_elems(void *opaque, const VMStateField *field)
+ 
+ static int vmstate_size(void *opaque, const VMStateField *field)
+ {
+-    int size = field->size;
++    int size;
+ 
+     if (field->flags & VMS_VBUFFER) {
+         size = *(int32_t *)(opaque + field->size_offset);
+         if (field->flags & VMS_MULTIPLY) {
+             size *= field->size;
+         }
++    } else if (field->flags & VMS_ARRAY_OF_POINTER) {
++        /*
++         * For an array of pointer, the each element is always size of a
++         * host pointer.
++         */
++        size = sizeof(void *);
++    } else {
++        size = field->size;
+     }
+ 
+     return size;

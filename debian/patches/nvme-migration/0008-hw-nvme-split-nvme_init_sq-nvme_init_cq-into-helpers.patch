@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Date: Thu, 11 Jun 2026 20:08:36 +0200
+Subject: [PATCH] hw/nvme: split nvme_init_sq/nvme_init_cq into helpers
+
+We will make a benefit from this split in later patches.
+
+Reviewed-by: Klaus Jensen <k.jensen@samsung.com>
+Acked-by: Stefan Hajnoczi <stefanha@redhat.com>
+Signed-off-by: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Signed-off-by: Klaus Jensen <k.jensen@samsung.com>
+(cherry picked from commit 77c2c3eb01d0a218c3e03fdb5c609424a76496de)
+---
+ hw/nvme/ctrl.c | 59 +++++++++++++++++++++++++++++++-------------------
+ 1 file changed, 37 insertions(+), 22 deletions(-)
+
+diff --git a/hw/nvme/ctrl.c b/hw/nvme/ctrl.c
+index 93ac365679..d08fd07c29 100644
+--- a/hw/nvme/ctrl.c
++++ b/hw/nvme/ctrl.c
+@@ -4864,18 +4864,14 @@ static uint16_t nvme_del_sq(NvmeCtrl *n, NvmeRequest *req)
+     return NVME_SUCCESS;
+ }
+ 
+-static void nvme_init_sq(NvmeSQueue *sq, NvmeCtrl *n, uint64_t dma_addr,
+-                         uint16_t sqid, uint16_t cqid, uint16_t size)
++static void __nvme_init_sq(NvmeSQueue *sq)
+ {
++    NvmeCtrl *n = sq->ctrl;
++    uint16_t sqid = sq->sqid;
++    uint16_t cqid = sq->cqid;
+     int i;
+     NvmeCQueue *cq;
+ 
+-    sq->ctrl = n;
+-    sq->dma_addr = dma_addr;
+-    sq->sqid = sqid;
+-    sq->size = size;
+-    sq->cqid = cqid;
+-    sq->head = sq->tail = 0;
+     sq->io_req = g_new0(NvmeRequest, sq->size);
+ 
+     QTAILQ_INIT(&sq->req_list);
+@@ -4905,6 +4901,18 @@ static void nvme_init_sq(NvmeSQueue *sq, NvmeCtrl *n, uint64_t dma_addr,
+     n->sq[sqid] = sq;
+ }
+ 
++static void nvme_init_sq(NvmeSQueue *sq, NvmeCtrl *n, uint64_t dma_addr,
++                         uint16_t sqid, uint16_t cqid, uint16_t size)
++{
++    sq->ctrl = n;
++    sq->dma_addr = dma_addr;
++    sq->sqid = sqid;
++    sq->size = size;
++    sq->cqid = cqid;
++    sq->head = sq->tail = 0;
++    __nvme_init_sq(sq);
++}
++
+ static uint16_t nvme_create_sq(NvmeCtrl *n, NvmeRequest *req)
+ {
+     NvmeSQueue *sq;
+@@ -5566,25 +5574,16 @@ static uint16_t nvme_del_cq(NvmeCtrl *n, NvmeRequest *req)
+     return NVME_SUCCESS;
+ }
+ 
+-static void nvme_init_cq(NvmeCQueue *cq, NvmeCtrl *n, uint64_t dma_addr,
+-                         uint16_t cqid, uint16_t vector, uint16_t size,
+-                         uint16_t irq_enabled)
++static void __nvme_init_cq(NvmeCQueue *cq)
+ {
++    NvmeCtrl *n = cq->ctrl;
+     PCIDevice *pci = PCI_DEVICE(n);
++    uint16_t cqid = cq->cqid;
+ 
+-    if (msix_present(pci) && irq_enabled) {
+-        msix_vector_use(pci, vector);
++    if (msix_present(pci) && cq->irq_enabled) {
++        msix_vector_use(pci, cq->vector);
+     }
+ 
+-    cq->ctrl = n;
+-    cq->cqid = cqid;
+-    cq->size = size;
+-    cq->dma_addr = dma_addr;
+-    cq->phase = 1;
+-    cq->irq_enabled = irq_enabled;
+-    cq->vector = vector;
+-    cq->head = cq->tail = 0;
+-    QTAILQ_INIT(&cq->req_list);
+     QTAILQ_INIT(&cq->sq_list);
+     if (n->dbbuf_enabled) {
+         cq->db_addr = n->dbbuf_dbs + (cqid << 3) + (1 << 2);
+@@ -5601,6 +5600,22 @@ static void nvme_init_cq(NvmeCQueue *cq, NvmeCtrl *n, uint64_t dma_addr,
+                                  &DEVICE(cq->ctrl)->mem_reentrancy_guard);
+ }
+ 
++static void nvme_init_cq(NvmeCQueue *cq, NvmeCtrl *n, uint64_t dma_addr,
++                         uint16_t cqid, uint16_t vector, uint16_t size,
++                         uint16_t irq_enabled)
++{
++    cq->ctrl = n;
++    cq->cqid = cqid;
++    cq->size = size;
++    cq->dma_addr = dma_addr;
++    cq->phase = 1;
++    cq->irq_enabled = irq_enabled;
++    cq->vector = vector;
++    cq->head = cq->tail = 0;
++    QTAILQ_INIT(&cq->req_list);
++    __nvme_init_cq(cq);
++}
++
+ static uint16_t nvme_create_cq(NvmeCtrl *n, NvmeRequest *req)
+ {
+     NvmeCQueue *cq;

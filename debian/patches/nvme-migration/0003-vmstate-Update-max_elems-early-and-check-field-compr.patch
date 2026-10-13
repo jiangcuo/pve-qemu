@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Peter Xu <peterx@redhat.com>
+Date: Wed, 1 Apr 2026 16:28:37 -0400
+Subject: [PATCH] vmstate: Update max_elems early and check field compressable
+ once
+
+QEMU has a trick in vmstate_save_vmsd_v(), where it will try to compress
+multiple JSON entries into one with a count to avoid duplicated entries.
+
+That only applies to the cases where vmsd_can_compress() should return
+true.  For example, vmsd_desc_field_start() later (who will take the
+updated max_elems as the last parameter) will ignore the value passed in
+when vmsd_can_compress() returns false.
+
+Do that check once at the start of loop, and use it to update max_elems, so
+that max_elems keeps 1 for uncompressable VMSD fields, which is more
+straightforward.
+
+This also paves way to make this counter work for ptr marker VMSD fields
+too.
+
+No functional change intended in this patch alone.
+
+Reviewed-by: Fabiano Rosas <farosas@suse.de>
+Reviewed-by: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Signed-off-by: Peter Xu <peterx@redhat.com>
+Reviewed-by: Juraj Marcin <jmarcin@redhat.com>
+Link: https://lore.kernel.org/qemu-devel/20260401202844.673494-5-peterx@redhat.com
+Signed-off-by: Fabiano Rosas <farosas@suse.de>
+(cherry picked from commit 29439dff51380fc97ddd565e0f05c8e33b597e95)
+---
+ migration/vmstate.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/migration/vmstate.c b/migration/vmstate.c
+index 3d4d31197e..2adfe65196 100644
+--- a/migration/vmstate.c
++++ b/migration/vmstate.c
+@@ -445,7 +445,8 @@ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+                 void *curr_elem = first_elem + size * i;
+                 const VMStateField *inner_field;
+                 bool is_null;
+-                int max_elems = n_elems - i;
++                /* maximum number of elements to compress in the JSON blob */
++                int max_elems = vmsd_can_compress(field) ? (n_elems - i) : 1;
+ 
+                 old_offset = qemu_file_transferred(f);
+                 if (field->flags & VMS_ARRAY_OF_POINTER) {
+@@ -476,7 +477,8 @@ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+                  * vs. nullptr). Search ahead for the next null/non-null element
+                  * and start a new compressed array if found.
+                  */
+-                if (vmdesc && (field->flags & VMS_ARRAY_OF_POINTER) &&
++                if (vmdesc && max_elems > 1 &&
++                    (field->flags & VMS_ARRAY_OF_POINTER) &&
+                     is_null != is_prev_null) {
+ 
+                     is_prev_null = is_null;
+@@ -531,7 +533,7 @@ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+                 }
+ 
+                 /* Compressed arrays only care about the first element */
+-                if (vmdesc_loop && vmsd_can_compress(field)) {
++                if (vmdesc_loop && max_elems > 1) {
+                     vmdesc_loop = NULL;
+                 }
+             }

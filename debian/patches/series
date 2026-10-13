@@ -82,3 +82,15 @@ pve/0057-block-zeroinit-support-using-as-blockdev-driver.patch
 pve/0058-block-alloc-track-support-using-as-blockdev-driver.patch
 pve/0059-block-qapi-include-child-references-in-block-device-.patch
 pve/0060-savevm-async-reuse-migration-blocker-check-for-snaps.patch
+nvme-migration/0001-vmstate-Pass-in-struct-itself-for-VMSTATE_ARRAY_OF_P.patch
+nvme-migration/0002-vmstate-Do-not-set-size-for-VMS_ARRAY_OF_POINTER.patch
+nvme-migration/0003-vmstate-Update-max_elems-early-and-check-field-compr.patch
+nvme-migration/0004-vmstate-Rename-VMS_NULLPTR_MARKER-to-VMS_MARKER_PTR_.patch
+nvme-migration/0005-vmstate-Implement-VMS_ARRAY_OF_POINTER_AUTO_ALLOC.patch
+nvme-migration/0006-tests-unit-test-vmstate-add-tests-for-VMS_ARRAY_OF_P.patch
+nvme-migration/0007-hw-nvme-add-migration-blockers-for-non-supported-cas.patch
+nvme-migration/0008-hw-nvme-split-nvme_init_sq-nvme_init_cq-into-helpers.patch
+nvme-migration/0009-hw-nvme-set-CQE.sq_id-earlier-in-nvme_process_sq.patch
+nvme-migration/0010-hw-nvme-unmap-req-sg-earlier-in-nvme_enqueue_req_com.patch
+nvme-migration/0011-hw-nvme-add-basic-live-migration-support.patch
+nvme-migration/0012-tests-qtest-nvme-test-add-migration-test-with-full-C.patch

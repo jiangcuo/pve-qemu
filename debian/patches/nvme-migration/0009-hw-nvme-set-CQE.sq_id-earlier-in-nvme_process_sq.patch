@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Date: Thu, 11 Jun 2026 20:08:37 +0200
+Subject: [PATCH] hw/nvme: set CQE.sq_id earlier in nvme_process_sq
+
+Instead of filling req->cqe.sq_id in nvme_post_cqes, let's set it earlier
+in nvme_process_sq.
+
+This shouldn't cause any issues, because req->cqe.sq_id never changes
+during lifetime of req.
+
+This will help us for migration support.
+
+Reviewed-by: Klaus Jensen <k.jensen@samsung.com>
+Acked-by: Stefan Hajnoczi <stefanha@redhat.com>
+Signed-off-by: Alexander Mikhalitsyn <aleksandr.mikhalitsyn@futurfusion.io>
+Signed-off-by: Klaus Jensen <k.jensen@samsung.com>
+(cherry picked from commit 5a1f41c66ad713b5abe5a8ebb2d32d8b2e0a3ec6)
+---
+ hw/nvme/ctrl.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hw/nvme/ctrl.c b/hw/nvme/ctrl.c
+index d08fd07c29..2e5a4de92b 100644
+--- a/hw/nvme/ctrl.c
++++ b/hw/nvme/ctrl.c
+@@ -1530,7 +1530,6 @@ static void nvme_post_cqes(void *opaque)
+ 
+         sq = req->sq;
+         req->cqe.status = cpu_to_le16((req->status << 1) | cq->phase);
+-        req->cqe.sq_id = cpu_to_le16(sq->sqid);
+         req->cqe.sq_head = cpu_to_le16(sq->head);
+         addr = cq->dma_addr + (cq->tail << NVME_CQES);
+         ret = pci_dma_write(PCI_DEVICE(n), addr, (void *)&req->cqe,
+@@ -7586,6 +7585,7 @@ static void nvme_process_sq(void *opaque)
+         QTAILQ_REMOVE(&sq->req_list, req, entry);
+         QTAILQ_INSERT_TAIL(&sq->out_req_list, req, entry);
+         nvme_req_clear(req);
++        req->cqe.sq_id = cpu_to_le16(sq->sqid);
+         req->cqe.cid = cmd.cid;
+         memcpy(&req->cmd, &cmd, sizeof(NvmeCmd));
+ 

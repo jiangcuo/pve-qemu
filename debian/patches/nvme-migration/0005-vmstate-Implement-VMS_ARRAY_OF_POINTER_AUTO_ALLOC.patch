@@ -1,0 +1,649 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Peter Xu <peterx@redhat.com>
+Date: Tue, 13 Oct 2026 20:00:52 +0800
+Subject: [PATCH] vmstate: Implement VMS_ARRAY_OF_POINTER_AUTO_ALLOC
+
+Backport of the following upstream commits to QEMU 10.0, needed by the
+NVMe live migration support:
+
+  f73d6251fb vmstate: Introduce vmstate_save_field_with_vmdesc()
+  e86c004fbd vmstate: Allow vmstate_info_nullptr to emit non-NULL markers
+  69c6d694bc vmstate: Implement load of ptr marker in vmstate core
+  de62e5ba2c vmstate: Implement VMS_ARRAY_OF_POINTER_AUTO_ALLOC
+  1c8784c9fd vmstate: Stop checking size for nullptr compression
+
+Upstream builds these on top of the vmstate errp refactoring (bool
+returning load/save handlers with Error **), which is not part of 10.0.
+They were ported by hand onto the 10.0 int returning get/put API with
+the same semantics and the same migration stream format:
+
+  * VMS_MARKER_PTR_VALID ('1') next to VMS_MARKER_PTR_NULL ('0');
+    vmstate_info_nullptr becomes vmstate_info_ptr_marker
+  * VMS_ARRAY_OF_POINTER_AUTO_ALLOC: every element is prefixed with a ptr
+    marker, populated elements are followed by the object and allocated
+    on the destination
+  * VMSTATE_VARRAY_OF_POINTER_TO_STRUCT_UINT{8,32}_ALLOC macros
+  * vmstate_check() validation for the new flag
+
+Unlike upstream, a VALID marker for a field without AUTO_ALLOC fails the
+migration with an error instead of an assertion on the destination.
+
+[ backport to QEMU 10.0 by Lierfang ]
+---
+ include/migration/vmstate.h  |  60 +++++++-
+ migration/savevm.c           |  27 +++-
+ migration/vmstate-types.c    |  32 ++--
+ migration/vmstate.c          | 280 ++++++++++++++++++++++++++---------
+ scripts/analyze-migration.py |  22 +--
+ 5 files changed, 316 insertions(+), 105 deletions(-)
+
+diff --git a/include/migration/vmstate.h b/include/migration/vmstate.h
+index d0758f5b33..0942ddef69 100644
+--- a/include/migration/vmstate.h
++++ b/include/migration/vmstate.h
+@@ -150,8 +150,21 @@ enum VMStateFlags {
+      * structure we are referencing to use. */
+     VMS_VSTRUCT           = 0x8000,
+ 
++    /*
++     * This is a sub-flag for VMS_ARRAY_OF_POINTER.  When this flag is set,
++     * VMS_ARRAY_OF_POINTER must also be set.  When set, it means array
++     * elements can contain either valid or NULL pointers, vmstate core
++     * will be responsible for synchronizing the pointer status, providing
++     * proper memory allocations on the pointer when it is populated on the
++     * source QEMU.  It also means the user of the field must make sure all
++     * the elements in the array are NULL pointers before loading.  This
++     * should also work with VMS_ALLOC when the array itself also needs to
++     * be allocated.
++     */
++    VMS_ARRAY_OF_POINTER_AUTO_ALLOC = 0x10000,
++
+     /* Marker for end of list */
+-    VMS_END = 0x10000
++    VMS_END                         = 0x20000,
+ };
+ 
+ typedef enum {
+@@ -247,9 +260,14 @@ extern const VMStateInfo vmstate_info_uint32;
+ extern const VMStateInfo vmstate_info_uint64;
+ extern const VMStateInfo vmstate_info_fd;
+ 
+-/** Put this in the stream when migrating a null pointer.*/
++/*
++ * Put this in the stream when migrating a pointer to reflect either a NULL
++ * or valid pointer.
++ */
+ #define VMS_MARKER_PTR_NULL          (0x30U)   /* '0' */
+-extern const VMStateInfo vmstate_info_nullptr;
++#define VMS_MARKER_PTR_VALID         (0x31U)   /* '1' */
++
++extern const VMStateInfo vmstate_info_ptr_marker;
+ 
+ extern const VMStateInfo vmstate_info_cpudouble;
+ 
+@@ -531,6 +549,42 @@ extern const VMStateInfo vmstate_info_qlist;
+     .offset     = vmstate_offset_array(_s, _f, _type*, _n),          \
+ }
+ 
++/*
++ * For migrating a dynamically allocated uint{8,32}-indexed array of
++ * pointers to structures (with NULL entries and with auto memory
++ * allocation).
++ *
++ * _type: type of structure pointed to
++ * _vmsd: VMSD for structure _type (when VMS_STRUCT is set)
++ * _info: VMStateInfo for _type (when VMS_STRUCT is not set)
++ * start: size of (_type) pointed to (for auto memory allocation)
++ */
++#define VMSTATE_VARRAY_OF_POINTER_TO_STRUCT_UINT8_ALLOC(\
++    _field, _state, _field_num, _version, _vmsd, _type) {            \
++    .name       = (stringify(_field)),                               \
++    .version_id = (_version),                                        \
++    .num_offset = vmstate_offset_value(_state, _field_num, uint8_t), \
++    .vmsd       = &(_vmsd),                                          \
++    .size       = sizeof(_type),                                     \
++    .flags      = VMS_POINTER | VMS_VARRAY_UINT8 |                   \
++                  VMS_ARRAY_OF_POINTER | VMS_STRUCT |                \
++                  VMS_ARRAY_OF_POINTER_AUTO_ALLOC,                   \
++    .offset     = vmstate_offset_pointer(_state, _field, _type *),   \
++}
++
++#define VMSTATE_VARRAY_OF_POINTER_TO_STRUCT_UINT32_ALLOC(\
++    _field, _state, _field_num, _version, _vmsd, _type) {             \
++    .name       = (stringify(_field)),                                \
++    .version_id = (_version),                                         \
++    .num_offset = vmstate_offset_value(_state, _field_num, uint32_t), \
++    .vmsd       = &(_vmsd),                                           \
++    .size       = sizeof(_type),                                      \
++    .flags      = VMS_POINTER | VMS_VARRAY_UINT32 |                   \
++                  VMS_ARRAY_OF_POINTER | VMS_STRUCT |                 \
++                  VMS_ARRAY_OF_POINTER_AUTO_ALLOC,                    \
++    .offset     = vmstate_offset_pointer(_state, _field, _type *),    \
++}
++
+ #define VMSTATE_STRUCT_SUB_ARRAY(_field, _state, _start, _num, _version, _vmsd, _type) { \
+     .name       = (stringify(_field)),                                     \
+     .version_id = (_version),                                              \
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 5049d3fabf..b8d71e2a9c 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -869,8 +869,33 @@ static void vmstate_check(const VMStateDescription *vmsd)
+     if (field) {
+         while (field->name) {
+             if (field->flags & VMS_ARRAY_OF_POINTER) {
+-                assert(field->size == 0);
++                if (field->flags & VMS_ARRAY_OF_POINTER_AUTO_ALLOC) {
++                    /*
++                     * Size must be provided because dest QEMU needs that
++                     * info to know what to allocate
++                     */
++                    assert(field->size || field->size_offset);
++                } else {
++                    /*
++                     * Otherwise size info isn't useful (because it's
++                     * always the size of host pointer), detect accidental
++                     * setup of sizes in this case.
++                     */
++                    assert(field->size == 0 && field->size_offset == 0);
++                }
++                /*
++                 * VMS_ARRAY_OF_POINTER must be used only together with one
++                 * of VMS_(V)ARRAY* flags.
++                 */
++                assert(field->flags & (VMS_ARRAY | VMS_VARRAY_INT32 |
++                                       VMS_VARRAY_UINT16 | VMS_VARRAY_UINT8 |
++                                       VMS_VARRAY_UINT32));
+             }
++
++            if (field->flags & VMS_ARRAY_OF_POINTER_AUTO_ALLOC) {
++                assert(field->flags & VMS_ARRAY_OF_POINTER);
++            }
++
+             if (field->flags & (VMS_STRUCT | VMS_VSTRUCT)) {
+                 /* Recurse to sub structures */
+                 vmstate_check(field->vmsd);
+diff --git a/migration/vmstate-types.c b/migration/vmstate-types.c
+index 32ef520821..8a5fd76bc1 100644
+--- a/migration/vmstate-types.c
++++ b/migration/vmstate-types.c
+@@ -338,33 +338,29 @@ const VMStateInfo vmstate_info_fd = {
+     .put  = put_fd,
+ };
+ 
+-static int get_nullptr(QEMUFile *f, void *pv, size_t size,
+-                       const VMStateField *field)
++static int get_ptr_marker(QEMUFile *f, void *pv, size_t size,
++                          const VMStateField *field)
+ 
+ {
+-    if (qemu_get_byte(f) == VMS_MARKER_PTR_NULL) {
+-        return  0;
+-    }
+-    error_report("vmstate: get_nullptr expected VMS_MARKER_PTR_NULL");
++    /*
++     * Load is done in vmstate core, see vmstate_ptr_marker_load().
++     */
++    g_assert_not_reached();
+     return -EINVAL;
+ }
+ 
+-static int put_nullptr(QEMUFile *f, void *pv, size_t size,
+-                        const VMStateField *field, JSONWriter *vmdesc)
++static int put_ptr_marker(QEMUFile *f, void *pv, size_t size,
++                          const VMStateField *field, JSONWriter *vmdesc)
+ 
+ {
+-    if (pv == NULL) {
+-        qemu_put_byte(f, VMS_MARKER_PTR_NULL);
+-        return 0;
+-    }
+-    error_report("vmstate: put_nullptr must be called with pv == NULL");
+-    return -EINVAL;
++    qemu_put_byte(f, pv ? VMS_MARKER_PTR_VALID : VMS_MARKER_PTR_NULL);
++    return 0;
+ }
+ 
+-const VMStateInfo vmstate_info_nullptr = {
+-    .name = "nullptr",
+-    .get  = get_nullptr,
+-    .put  = put_nullptr,
++const VMStateInfo vmstate_info_ptr_marker = {
++    .name = "ptr-marker",
++    .get  = get_ptr_marker,
++    .put  = put_ptr_marker,
+ };
+ 
+ /* 64 bit unsigned int. See that the received value is the same than the one
+diff --git a/migration/vmstate.c b/migration/vmstate.c
+index 2adfe65196..14cf0939af 100644
+--- a/migration/vmstate.c
++++ b/migration/vmstate.c
+@@ -52,12 +52,12 @@ vmstate_field_exists(const VMStateDescription *vmsd, const VMStateField *field,
+ }
+ 
+ /*
+- * Create a fake nullptr field when there's a NULL pointer detected in the
++ * Create a ptr marker field when there's a NULL pointer detected in the
+  * array of a VMS_ARRAY_OF_POINTER VMSD field.  It's needed because we
+  * can't dereference the NULL pointer.
+  */
+ static const VMStateField *
+-vmsd_create_fake_nullptr_field(const VMStateField *field)
++vmsd_create_ptr_marker_field(const VMStateField *field)
+ {
+     VMStateField *fake = g_new0(VMStateField, 1);
+ 
+@@ -68,12 +68,12 @@ vmsd_create_fake_nullptr_field(const VMStateField *field)
+     fake->name = field->name;
+     fake->version_id = field->version_id;
+ 
+-    /* Do not need "field_exists" check as it always exists (which is null) */
++    /* Do not need "field_exists" check as it always exists */
+     fake->field_exists = NULL;
+ 
+-    /* See vmstate_info_nullptr - use 1 byte to represent nullptr */
++    /* See vmstate_info_ptr_marker - use 1 byte to represent ptr status */
+     fake->size = 1;
+-    fake->info = &vmstate_info_nullptr;
++    fake->info = &vmstate_info_ptr_marker;
+     fake->flags = VMS_SINGLE;
+ 
+     /* All the rest fields shouldn't matter.. */
+@@ -139,6 +139,99 @@ static void vmstate_handle_alloc(void *ptr, const VMStateField *field,
+     }
+ }
+ 
++static int vmstate_ptr_marker_load(QEMUFile *f, bool *load_field)
++{
++    int byte = qemu_get_byte(f);
++
++    if (byte == VMS_MARKER_PTR_NULL) {
++        /* When it's a null ptr marker, do not continue the load */
++        *load_field = false;
++        return 0;
++    }
++
++    if (byte == VMS_MARKER_PTR_VALID) {
++        /* We need to load the field right after the marker */
++        *load_field = true;
++        return 0;
++    }
++
++    error_report("Unexpected ptr marker: %d", byte);
++    return -EINVAL;
++}
++
++/*
++ * Try to prepare loading the next element, the object pointer to be put
++ * into @next_elem.  When @next_elem is NULL, it means we should skip
++ * loading this element.
++ *
++ * Returns a negative value for errors, migration must be aborted.
++ */
++static int vmstate_load_next(QEMUFile *f, const VMStateField *field,
++                             void *first_elem, void **next_elem,
++                             int size, int i)
++{
++    bool auto_alloc = field->flags & VMS_ARRAY_OF_POINTER_AUTO_ALLOC;
++    void *ptr = first_elem + size * i, **pptr;
++    bool load_field;
++
++    if (!(field->flags & VMS_ARRAY_OF_POINTER)) {
++        /* Simplest case, no pointer involved */
++        *next_elem = ptr;
++        return 0;
++    }
++
++    /*
++     * We're loading an array of pointers, switch to use pptr to make it
++     * easier to read later
++     */
++    pptr = (void **)ptr;
++
++    /*
++     * If auto_alloc is on, making sure the user provided an array of NULL
++     * pointers to start with
++     */
++    assert(!auto_alloc || *pptr == NULL);
++
++    /*
++     * When pointer is null, we must expect a ptr marker first.  Use cases:
++     *
++     * (1) _AUTO_ALLOC implies a ptr marker will always exist, or,
++     *
++     * (2) the element on destination is NULL, which expects the src to send a
++     *     NULL-only marker.
++     *
++     * Here, checking against a NULL pointer will work for both.
++     */
++    if (!*pptr) {
++        if (vmstate_ptr_marker_load(f, &load_field) < 0) {
++            trace_vmstate_load_field_error(field->name, -EINVAL);
++            return -EINVAL;
++        }
++
++        /*
++         * If loading is needed, do pre-allocation first (otherwise keeping
++         * *pptr==NULL to imply a skip below)
++         */
++        if (load_field) {
++            /* Only valid when auto_alloc=on on the field */
++            if (!auto_alloc) {
++                error_report("Unexpected valid ptr marker for %s",
++                             field->name);
++                return -EINVAL;
++            }
++            /*
++             * NOTE: do not use vmstate_size() here, because we need the
++             * object size, not entry size of the array.
++             */
++            *pptr = g_malloc0(field->size);
++        }
++    }
++
++    /* Move the cursor to the next element for loading */
++    *next_elem = *pptr;
++    return 0;
++}
++
+ int vmstate_load_state(QEMUFile *f, const VMStateDescription *vmsd,
+                        void *opaque, int version_id)
+ {
+@@ -180,38 +273,25 @@ int vmstate_load_state(QEMUFile *f, const VMStateDescription *vmsd,
+                 assert(first_elem || !n_elems || !size);
+             }
+             for (i = 0; i < n_elems; i++) {
+-                void *curr_elem = first_elem + size * i;
+-                const VMStateField *inner_field;
++                void *curr_elem;
+ 
+-                if (field->flags & VMS_ARRAY_OF_POINTER) {
+-                    curr_elem = *(void **)curr_elem;
+-                }
+-
+-                if (!curr_elem && size) {
+-                    /*
+-                     * If null pointer found (which should only happen in
+-                     * an array of pointers), use null placeholder and do
+-                     * not follow.
+-                     */
+-                    inner_field = vmsd_create_fake_nullptr_field(field);
+-                } else {
+-                    inner_field = field;
+-                }
+-
+-                if (inner_field->flags & VMS_STRUCT) {
+-                    ret = vmstate_load_state(f, inner_field->vmsd, curr_elem,
+-                                             inner_field->vmsd->version_id);
+-                } else if (inner_field->flags & VMS_VSTRUCT) {
+-                    ret = vmstate_load_state(f, inner_field->vmsd, curr_elem,
+-                                             inner_field->struct_version_id);
+-                } else {
+-                    ret = inner_field->info->get(f, curr_elem, size,
+-                                                 inner_field);
+-                }
++                ret = vmstate_load_next(f, field, first_elem, &curr_elem,
++                                        size, i);
++                if (ret >= 0) {
++                    if (!curr_elem) {
++                        /* Implies a skip */
++                        continue;
++                    }
+ 
+-                /* If we used a fake temp field.. free it now */
+-                if (inner_field != field) {
+-                    g_clear_pointer((gpointer *)&inner_field, g_free);
++                    if (field->flags & VMS_STRUCT) {
++                        ret = vmstate_load_state(f, field->vmsd, curr_elem,
++                                                 field->vmsd->version_id);
++                    } else if (field->flags & VMS_VSTRUCT) {
++                        ret = vmstate_load_state(f, field->vmsd, curr_elem,
++                                                 field->struct_version_id);
++                    } else {
++                        ret = field->info->get(f, curr_elem, size, field);
++                    }
+                 }
+ 
+                 if (ret >= 0) {
+@@ -304,6 +384,16 @@ static bool vmsd_can_compress(const VMStateField *field)
+         return false;
+     }
+ 
++    if (field->flags & VMS_ARRAY_OF_POINTER_AUTO_ALLOC) {
++        /*
++         * This may involve two VMSD fields to be saved, one for the
++         * marker to show if the pointer is NULL, followed by the real
++         * vmstate object.  To make it simple at least for now, skip
++         * compression for this one.
++         */
++        return false;
++    }
++
+     if (field->flags & VMS_STRUCT) {
+         const VMStateField *sfield = field->vmsd->fields;
+         while (sfield->name) {
+@@ -403,6 +493,56 @@ int vmstate_save_state_with_err(QEMUFile *f, const VMStateDescription *vmsd,
+     return vmstate_save_state_v(f, vmsd, opaque, vmdesc_id, vmsd->version_id, errp);
+ }
+ 
++static int vmstate_save_field(QEMUFile *f, void *pv, size_t size,
++                              const VMStateField *field, JSONWriter *vmdesc,
++                              Error **errp)
++{
++    int ret;
++
++    if (field->flags & VMS_STRUCT) {
++        ret = vmstate_save_state(f, field->vmsd, pv, vmdesc);
++    } else if (field->flags & VMS_VSTRUCT) {
++        ret = vmstate_save_state_v(f, field->vmsd, pv, vmdesc,
++                                   field->struct_version_id, errp);
++    } else {
++        ret = field->info->put(f, pv, size, field, vmdesc);
++        if (ret < 0) {
++            error_setg(errp, "put failed");
++        }
++    }
++
++    return ret;
++}
++
++/*
++ * Save a whole VMSD field, including its JSON blob separately when @vmdesc
++ * is specified.
++ */
++static int vmstate_save_field_with_vmdesc(QEMUFile *f, void *pv, size_t size,
++                                          const VMStateDescription *vmsd,
++                                          const VMStateField *field,
++                                          JSONWriter *vmdesc, int i, int max,
++                                          Error **errp)
++{
++    uint64_t old_offset, written_bytes;
++    int ret;
++
++    vmsd_desc_field_start(vmsd, vmdesc, field, i, max);
++
++    old_offset = qemu_file_transferred(f);
++    ret = vmstate_save_field(f, pv, size, field, vmdesc, errp);
++    written_bytes = qemu_file_transferred(f) - old_offset;
++
++    vmsd_desc_field_end(vmsd, vmdesc, field, written_bytes);
++
++    if (ret) {
++        error_prepend(errp, "Save of field %s/%s failed: ",
++                      vmsd->name, field->name);
++    }
++
++    return ret;
++}
++
+ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+                          void *opaque, JSONWriter *vmdesc, int version_id, Error **errp)
+ {
+@@ -431,9 +571,14 @@ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+             void *first_elem = opaque + field->offset;
+             int i, n_elems = vmstate_n_elems(opaque, field);
+             int size = vmstate_size(opaque, field);
+-            uint64_t old_offset, written_bytes;
+             JSONWriter *vmdesc_loop = vmdesc;
+             bool is_prev_null = false;
++            /*
++             * When this is enabled, it means we will always push a ptr
++             * marker first for each element saying if it's populated.
++             */
++            bool use_dynamic_array =
++                field->flags & VMS_ARRAY_OF_POINTER_AUTO_ALLOC;
+ 
+             trace_vmstate_save_state_loop(vmsd->name, field->name, n_elems);
+             if (field->flags & VMS_POINTER) {
+@@ -444,27 +589,22 @@ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+             for (i = 0; i < n_elems; i++) {
+                 void *curr_elem = first_elem + size * i;
+                 const VMStateField *inner_field;
+-                bool is_null;
+                 /* maximum number of elements to compress in the JSON blob */
+                 int max_elems = vmsd_can_compress(field) ? (n_elems - i) : 1;
++                bool use_marker_field, is_null = false;
+ 
+-                old_offset = qemu_file_transferred(f);
+                 if (field->flags & VMS_ARRAY_OF_POINTER) {
+                     assert(curr_elem);
+                     curr_elem = *(void **)curr_elem;
++                    is_null = !curr_elem;
+                 }
+ 
+-                if (!curr_elem && size) {
+-                    /*
+-                     * If null pointer found (which should only happen in
+-                     * an array of pointers), use null placeholder and do
+-                     * not follow.
+-                     */
+-                    inner_field = vmsd_create_fake_nullptr_field(field);
+-                    is_null = true;
++                use_marker_field = use_dynamic_array || is_null;
++
++                if (use_marker_field) {
++                    inner_field = vmsd_create_ptr_marker_field(field);
+                 } else {
+                     inner_field = field;
+-                    is_null = false;
+                 }
+ 
+                 /*
+@@ -486,7 +626,7 @@ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+ 
+                     for (int j = i + 1; j < n_elems; j++) {
+                         void *elem = *(void **)(first_elem + size * j);
+-                        bool elem_is_null = !elem && size;
++                        bool elem_is_null = !elem;
+ 
+                         if (is_null != elem_is_null) {
+                             max_elems = j - i;
+@@ -495,37 +635,31 @@ int vmstate_save_state_v(QEMUFile *f, const VMStateDescription *vmsd,
+                     }
+                 }
+ 
+-                vmsd_desc_field_start(vmsd, vmdesc_loop, inner_field,
+-                                      i, max_elems);
+-
+-                if (inner_field->flags & VMS_STRUCT) {
+-                    ret = vmstate_save_state(f, inner_field->vmsd,
+-                                             curr_elem, vmdesc_loop);
+-                } else if (inner_field->flags & VMS_VSTRUCT) {
+-                    ret = vmstate_save_state_v(f, inner_field->vmsd,
+-                                               curr_elem, vmdesc_loop,
+-                                               inner_field->struct_version_id,
+-                                               errp);
+-                } else {
+-                    ret = inner_field->info->put(f, curr_elem, size,
+-                                                 inner_field, vmdesc_loop);
+-                    if (ret < 0) {
+-                        error_setg(errp, "put failed");
+-                    }
+-                }
+-
+-                written_bytes = qemu_file_transferred(f) - old_offset;
+-                vmsd_desc_field_end(vmsd, vmdesc_loop, inner_field,
+-                                    written_bytes);
++                ret = vmstate_save_field_with_vmdesc(f, curr_elem, size, vmsd,
++                                                     inner_field, vmdesc_loop,
++                                                     i, max_elems, errp);
+ 
+                 /* If we used a fake temp field.. free it now */
+-                if (is_null) {
++                if (use_marker_field) {
+                     g_clear_pointer((gpointer *)&inner_field, g_free);
+                 }
+ 
++                /*
++                 * If we're using dynamic array and the element is
++                 * populated, save the real object right after the marker.
++                 */
++                if (!ret && use_dynamic_array && curr_elem) {
++                    /*
++                     * NOTE: do not use vmstate_size() here because we want
++                     * to save the real VMSD object now.
++                     */
++                    ret = vmstate_save_field_with_vmdesc(f, curr_elem,
++                                                         field->size, vmsd,
++                                                         field, vmdesc_loop,
++                                                         i, max_elems, errp);
++                }
++
+                 if (ret) {
+-                    error_prepend(errp, "Save of field %s/%s failed: ",
+-                                  vmsd->name, field->name);
+                     if (vmsd->post_save) {
+                         vmsd->post_save(opaque);
+                     }
+diff --git a/scripts/analyze-migration.py b/scripts/analyze-migration.py
+index 67631ac43e..91f55eabda 100755
+--- a/scripts/analyze-migration.py
++++ b/scripts/analyze-migration.py
+@@ -417,26 +417,26 @@ def __init__(self, desc, file):
+         super(VMSDFieldIntLE, self).__init__(desc, file)
+         self.dtype = '<i%d' % self.size
+ 
+-class VMSDFieldNull(VMSDFieldGeneric):
++class VMSDFieldPtrMarker(VMSDFieldGeneric):
+     NULL_PTR_MARKER = b'0'
++    VALID_PTR_MARKER = b'1'
+ 
+     def __init__(self, desc, file):
+-        super(VMSDFieldNull, self).__init__(desc, file)
++        super(VMSDFieldPtrMarker, self).__init__(desc, file)
+ 
+     def __repr__(self):
+-        # A NULL pointer is encoded in the stream as a '0' to
+-        # disambiguate from a mere 0x0 value and avoid consumers
+-        # trying to follow the NULL pointer. Displaying '0', 0x30 or
+-        # 0x0 when analyzing the JSON debug stream could become
++        # A NULL / non-NULL pointer may be encoded in the stream as a
++        # '0'/'1' to represent the status of the pointer.  Displaying '0',
++        # 0x30 or 0x0 when analyzing the JSON debug stream could become
+         # confusing, so use an explicit term instead.
+-        return "nullptr"
++        return "null-ptr" if self.data == self.NULL_PTR_MARKER else "valid-ptr"
+ 
+     def __str__(self):
+         return self.__repr__()
+ 
+     def read(self):
+-        super(VMSDFieldNull, self).read()
+-        assert(self.data == self.NULL_PTR_MARKER)
++        super(VMSDFieldPtrMarker, self).read()
++        assert(self.data in [self.NULL_PTR_MARKER, self.VALID_PTR_MARKER])
+         return self.data
+ 
+ class VMSDFieldBool(VMSDFieldGeneric):
+@@ -590,7 +590,9 @@ def getDict(self):
+     "bitmap" : VMSDFieldGeneric,
+     "struct" : VMSDFieldStruct,
+     "capability": VMSDFieldCap,
+-    "nullptr": VMSDFieldNull,
++    # Keep the old nullptr for old binaries
++    "nullptr": VMSDFieldPtrMarker,
++    "ptr-marker": VMSDFieldPtrMarker,
+     "unknown" : VMSDFieldGeneric,
+ }
+ 
