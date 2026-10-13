@@ -1,0 +1,479 @@
+From 15d0df78d323a8e8f8378e88dc6102deb6a6ea34 Mon Sep 17 00:00:00 2001
+From: Gerd Hoffmann <kraxel@redhat.com>
+Date: Tue, 13 Oct 2026 16:42:52 +0800
+Subject: [PATCH] hw/display: add virtio-ramfb device
+
+Like virtio-vga, but using ramfb instead of legacy VGA. Useful for booting
+from OVMF/AAVMF into Windows ARM, which expects a linear framebuffer
+(provided by the firmware's QemuRamfbDxe GOP) before a virtio-gpu driver
+takes over the display.
+
+Two devices are added:
+
+  * virtio-ramfb     - ramfb + virtio-gpu (2D)
+  * virtio-ramfb-gl  - ramfb + virtio-gpu-gl (needs virglrenderer + opengl)
+
+While the guest has not enabled virtio-gpu scanout, the console shows the
+ramfb framebuffer; once the virtio-gpu driver enables a scanout, display is
+handed over to virtio-gpu. A virtio-gpu reset (e.g. guest reboot) falls
+back to ramfb again.
+
+Ported from the UTM QEMU fork (utm-edition, also based on v10.0.12):
+  * 819b2c2984 ("hw/display: add virtio-ramfb device") - Gerd Hoffmann
+  * fdd3d1d3a0 ("virtio-ramfb: enable GL if supported") - osy
+  * 2b73a7937d ("virtio-ramfb: break out GL supported device") - osy
+  * 60e45e1f9a ("virtio-ramfb: register the host-visible memory BAR and
+    shm capability") - osy
+
+Changes compared to UTM:
+  * migrate the ramfb configuration (ramfb_vmstate) instead of the empty
+    FIXME vmstate, so live migration keeps the boot framebuffer working
+  * fix a black console once the guest OS boots: the firmware's VirtioGpuDxe
+    drives virtio-gpu, which replaces (and frees) the ramfb surface on the
+    shared console; on ExitBootServices it resets virtio-gpu and display
+    falls back to ramfb, but ramfb_display_update() only installs a surface
+    once after a config write, so the console stayed black while Windows
+    drew into the ramfb. Add ramfb_display_update_shared(), which re-creates
+    the ramfb surface from the last config whenever the console isn't
+    showing the ramfb framebuffer.
+  * bail out of realize when ramfb_setup() fails (e.g. a second ramfb
+    device) instead of continuing with a NULL ramfb
+  * also require CONFIG_VIRTIO_GPU and CONFIG_VIRTIO_PCI in meson, and add
+    module_obj()/module_dep() annotations for --enable-modules builds
+
+Usage (aarch64 virt):
+  -device virtio-ramfb[,xres=1920,yres=1080]
+Only one ramfb-backed device may exist per VM (fw_cfg "etc/ramfb").
+---
+ hw/display/meson.build       |  12 ++
+ hw/display/ramfb-stubs.c     |   4 +
+ hw/display/ramfb.c           |  34 ++++++
+ hw/display/virtio-ramfb-gl.c |  50 ++++++++
+ hw/display/virtio-ramfb.c    | 218 +++++++++++++++++++++++++++++++++++
+ hw/display/virtio-ramfb.h    |  28 +++++
+ include/hw/display/ramfb.h   |   1 +
+ 7 files changed, 347 insertions(+)
+
+diff --git a/hw/display/meson.build b/hw/display/meson.build
+index 90e6c041bd..6ee21e401b 100644
+--- a/hw/display/meson.build
++++ b/hw/display/meson.build
+@@ -91,6 +91,18 @@ if config_all_devices.has_key('CONFIG_VIRTIO_GPU')
+   endif
+ endif
+ 
++if config_all_devices.has_key('CONFIG_FW_CFG_DMA')
++  virtio_ramfb_ss = ss.source_set()
++  virtio_ramfb_ss.add(when: ['CONFIG_FW_CFG_DMA', 'CONFIG_VIRTIO_GPU', 'CONFIG_VIRTIO_PCI'],
++                      if_true: [files('virtio-ramfb.c'), pixman])
++  hw_display_modules += {'virtio-ramfb': virtio_ramfb_ss}
++  virtio_ramfb_gl_ss = ss.source_set()
++  virtio_ramfb_gl_ss.add(when: ['CONFIG_FW_CFG_DMA', 'CONFIG_VIRTIO_GPU', 'CONFIG_VIRTIO_PCI',
++                                virgl, opengl],
++                         if_true: [files('virtio-ramfb-gl.c'), pixman])
++  hw_display_modules += {'virtio-ramfb-gl': virtio_ramfb_gl_ss}
++endif
++
+ if config_all_devices.has_key('CONFIG_VIRTIO_PCI')
+   virtio_gpu_pci_ss = ss.source_set()
+   virtio_gpu_pci_ss.add(when: ['CONFIG_VIRTIO_GPU', 'CONFIG_VIRTIO_PCI'],
+diff --git a/hw/display/ramfb-stubs.c b/hw/display/ramfb-stubs.c
+index cf64733b10..17c462d48d 100644
+--- a/hw/display/ramfb-stubs.c
++++ b/hw/display/ramfb-stubs.c
+@@ -8,6 +8,10 @@ void ramfb_display_update(QemuConsole *con, RAMFBState *s)
+ {
+ }
+ 
++void ramfb_display_update_shared(QemuConsole *con, RAMFBState *s)
++{
++}
++
+ RAMFBState *ramfb_setup(Error **errp)
+ {
+     error_setg(errp, "ramfb support not available");
+diff --git a/hw/display/ramfb.c b/hw/display/ramfb.c
+index 8c0f907673..e91ec80dbe 100644
+--- a/hw/display/ramfb.c
++++ b/hw/display/ramfb.c
+@@ -33,6 +33,10 @@ typedef struct RAMFBCfg RAMFBCfg;
+ struct RAMFBState {
+     DisplaySurface *ds;
+     uint32_t width, height;
++    /* host mapping and layout of the current framebuffer */
++    void *data;
++    int stride;
++    pixman_format_code_t format;
+     struct RAMFBCfg cfg;
+ };
+ 
+@@ -99,6 +103,9 @@ static void ramfb_fw_cfg_write(void *dev, off_t offset, size_t len)
+ 
+     s->width = width;
+     s->height = height;
++    s->data = surface_data(surface);
++    s->stride = surface_stride(surface);
++    s->format = surface_format(surface);
+     qemu_free_displaysurface(s->ds);
+     s->ds = surface;
+ }
+@@ -118,6 +125,33 @@ void ramfb_display_update(QemuConsole *con, RAMFBState *s)
+     dpy_gfx_update_full(con);
+ }
+ 
++/*
++ * For devices sharing their console with another scanout source
++ * (virtio-ramfb): while that source was active it replaced, and freed, the
++ * ramfb surface. Whenever the console isn't showing the ramfb framebuffer,
++ * re-create the surface from the last guest config before updating.
++ */
++void ramfb_display_update_shared(QemuConsole *con, RAMFBState *s)
++{
++    DisplaySurface *cur;
++
++    if (!s->width || !s->height) {
++        return;
++    }
++
++    cur = qemu_console_surface(con);
++    if (!s->ds && !(cur &&
++                    surface_data(cur) == s->data &&
++                    surface_width(cur) == s->width &&
++                    surface_height(cur) == s->height &&
++                    surface_stride(cur) == s->stride &&
++                    surface_format(cur) == s->format)) {
++        ramfb_fw_cfg_write(s, 0, 0);
++    }
++
++    ramfb_display_update(con, s);
++}
++
+ static int ramfb_post_load(void *opaque, int version_id)
+ {
+     ramfb_fw_cfg_write(opaque, 0, 0);
+diff --git a/hw/display/virtio-ramfb-gl.c b/hw/display/virtio-ramfb-gl.c
+new file mode 100644
+index 0000000000..31c294caf6
+--- /dev/null
++++ b/hw/display/virtio-ramfb-gl.c
+@@ -0,0 +1,50 @@
++#include "qemu/osdep.h"
++#include "hw/pci/pci.h"
++#include "hw/qdev-properties.h"
++#include "hw/virtio/virtio-gpu.h"
++#include "hw/display/vga.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "virtio-ramfb.h"
++#include "qom/object.h"
++
++#define TYPE_VIRTIO_RAMFB_GL "virtio-ramfb-gl"
++
++typedef struct VirtIORAMFBGL VirtIORAMFBGL;
++DECLARE_INSTANCE_CHECKER(VirtIORAMFBGL, VIRTIO_RAMFB_GL,
++                         TYPE_VIRTIO_RAMFB_GL)
++
++struct VirtIORAMFBGL {
++    VirtIORAMFBBase parent_obj;
++
++    VirtIOGPUGL   vdev;
++};
++
++static void virtio_ramfb_gl_inst_initfn(Object *obj)
++{
++    VirtIORAMFBGL *dev = VIRTIO_RAMFB_GL(obj);
++
++    virtio_instance_init_common(obj, &dev->vdev, sizeof(dev->vdev),
++                                TYPE_VIRTIO_GPU_GL);
++    VIRTIO_RAMFB_BASE(dev)->vgpu = VIRTIO_GPU_BASE(&dev->vdev);
++}
++
++
++static VirtioPCIDeviceTypeInfo virtio_ramfb_gl_info = {
++    .generic_name  = TYPE_VIRTIO_RAMFB_GL,
++    .parent        = TYPE_VIRTIO_RAMFB_BASE,
++    .instance_size = sizeof(VirtIORAMFBGL),
++    .instance_init = virtio_ramfb_gl_inst_initfn,
++};
++module_obj(TYPE_VIRTIO_RAMFB_GL);
++
++static void virtio_ramfb_register_types(void)
++{
++    if (have_vga) {
++        virtio_pci_types_register(&virtio_ramfb_gl_info);
++    }
++}
++
++type_init(virtio_ramfb_register_types)
++
++module_dep("hw-display-virtio-ramfb");
+diff --git a/hw/display/virtio-ramfb.c b/hw/display/virtio-ramfb.c
+new file mode 100644
+index 0000000000..295b055da1
+--- /dev/null
++++ b/hw/display/virtio-ramfb.c
+@@ -0,0 +1,218 @@
++#include "qemu/osdep.h"
++#include "system/system.h"
++#include "hw/pci/pci.h"
++#include "ui/console.h"
++#include "hw/qdev-properties.h"
++#include "virtio-ramfb.h"
++#include "qapi/error.h"
++#include "qemu/module.h"
++#include "qom/object.h"
++
++static int virtio_ramfb_get_flags(void *opaque)
++{
++    VirtIORAMFBBase *vramfb = opaque;
++    VirtIOGPUBase *g = vramfb->vgpu;
++
++    if (g->hw_ops->get_flags) {
++        return g->hw_ops->get_flags(g);
++    } else {
++        return 0;
++    }
++}
++
++static void virtio_ramfb_invalidate_display(void *opaque)
++{
++    VirtIORAMFBBase *vramfb = opaque;
++    VirtIOGPUBase *g = vramfb->vgpu;
++
++    if (g->enable) {
++        g->hw_ops->invalidate(g);
++    }
++}
++
++static void virtio_ramfb_text_update(void *opaque, console_ch_t *chardata)
++{
++    VirtIORAMFBBase *vramfb = opaque;
++    VirtIOGPUBase *g = vramfb->vgpu;
++
++    if (g->hw_ops->text_update) {
++        g->hw_ops->text_update(g, chardata);
++    }
++}
++
++static void virtio_ramfb_update_display(void *opaque)
++{
++    VirtIORAMFBBase *vramfb = opaque;
++    VirtIOGPUBase *g = vramfb->vgpu;
++
++    if (g->enable) {
++        g->hw_ops->gfx_update(g);
++    } else {
++        /* virtio-gpu may have taken over the console in between */
++        ramfb_display_update_shared(g->scanout[0].con, vramfb->ramfb);
++    }
++}
++
++static void virtio_ramfb_ui_info(void *opaque, uint32_t idx, QemuUIInfo *info)
++{
++    VirtIORAMFBBase *vramfb = opaque;
++    VirtIOGPUBase *g = vramfb->vgpu;
++
++    if (g->hw_ops->ui_info) {
++        g->hw_ops->ui_info(g, idx, info);
++    }
++}
++
++static void virtio_ramfb_gl_block(void *opaque, bool block)
++{
++    VirtIORAMFBBase *vramfb = opaque;
++    VirtIOGPUBase *g = vramfb->vgpu;
++
++    if (g->hw_ops->gl_block) {
++        g->hw_ops->gl_block(g, block);
++    }
++}
++
++static const GraphicHwOps virtio_ramfb_ops = {
++    .get_flags = virtio_ramfb_get_flags,
++    .invalidate = virtio_ramfb_invalidate_display,
++    .gfx_update = virtio_ramfb_update_display,
++    .text_update = virtio_ramfb_text_update,
++    .ui_info = virtio_ramfb_ui_info,
++    .gl_block = virtio_ramfb_gl_block,
++};
++
++static const VMStateDescription vmstate_virtio_ramfb = {
++    .name = "virtio-ramfb",
++    .version_id = 2,
++    .minimum_version_id = 2,
++    .fields = (const VMStateField[]) {
++        /* no pci stuff here, saving the virtio device will handle that */
++        VMSTATE_STRUCT_POINTER(ramfb, VirtIORAMFBBase, ramfb_vmstate,
++                               RAMFBState),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++/* RAMFB device wrapper around PCI device around virtio GPU */
++static void virtio_ramfb_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
++{
++    VirtIORAMFBBase *vramfb = VIRTIO_RAMFB_BASE(vpci_dev);
++    VirtIOGPUBase *g = vramfb->vgpu;
++    int i;
++
++    if (virtio_gpu_hostmem_enabled(g->conf)) {
++        vpci_dev->msix_bar_idx = 1;
++        vpci_dev->modern_mem_bar_idx = 2;
++        memory_region_init(&g->hostmem, OBJECT(g), "virtio-gpu-hostmem",
++                           g->conf.hostmem);
++        pci_register_bar(&vpci_dev->pci_dev, 4,
++                         PCI_BASE_ADDRESS_SPACE_MEMORY |
++                         PCI_BASE_ADDRESS_MEM_PREFETCH |
++                         PCI_BASE_ADDRESS_MEM_TYPE_64,
++                         &g->hostmem);
++        virtio_pci_add_shm_cap(vpci_dev, 4, 0, g->conf.hostmem,
++                               VIRTIO_GPU_SHM_ID_HOST_VISIBLE);
++    }
++
++    /* init virtio bits */
++    virtio_pci_force_virtio_1(vpci_dev);
++    if (!qdev_realize(DEVICE(g), BUS(&vpci_dev->bus), errp)) {
++        return;
++    }
++
++    /* init ramfb */
++    vramfb->ramfb = ramfb_setup(errp);
++    if (!vramfb->ramfb) {
++        return;
++    }
++    graphic_console_set_hwops(g->scanout[0].con, &virtio_ramfb_ops, vramfb);
++
++    for (i = 0; i < g->conf.max_outputs; i++) {
++        object_property_set_link(OBJECT(g->scanout[i].con), "device",
++                                 OBJECT(vpci_dev), &error_abort);
++    }
++}
++
++static void virtio_ramfb_reset_hold(Object *obj, ResetType type)
++{
++    VirtIORAMFBBase *dev = VIRTIO_RAMFB_BASE(obj);
++    VirtIORAMFBBaseClass *klass = VIRTIO_RAMFB_BASE_GET_CLASS(dev);
++
++    /* reset virtio-gpu */
++    if (klass->parent_phases.hold) {
++        klass->parent_phases.hold(obj, type);
++    }
++}
++
++static const Property virtio_ramfb_base_properties[] = {
++    DEFINE_VIRTIO_GPU_PCI_PROPERTIES(VirtIOPCIProxy),
++};
++
++static void virtio_ramfb_base_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    VirtioPCIClass *k = VIRTIO_PCI_CLASS(klass);
++    VirtIORAMFBBaseClass *v = VIRTIO_RAMFB_BASE_CLASS(klass);
++    PCIDeviceClass *pcidev_k = PCI_DEVICE_CLASS(klass);
++    ResettableClass *rc = RESETTABLE_CLASS(klass);
++
++    set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
++    device_class_set_props(dc, virtio_ramfb_base_properties);
++    dc->vmsd = &vmstate_virtio_ramfb;
++    dc->hotpluggable = false;
++    resettable_class_set_parent_phases(rc, NULL, virtio_ramfb_reset_hold, NULL,
++                                       &v->parent_phases);
++
++    k->realize = virtio_ramfb_realize;
++    pcidev_k->class_id = PCI_CLASS_DISPLAY_OTHER;
++}
++
++static const TypeInfo virtio_ramfb_base_info = {
++    .name          = TYPE_VIRTIO_RAMFB_BASE,
++    .parent        = TYPE_VIRTIO_PCI,
++    .instance_size = sizeof(VirtIORAMFBBase),
++    .class_size    = sizeof(VirtIORAMFBBaseClass),
++    .class_init    = virtio_ramfb_base_class_init,
++    .abstract      = true,
++};
++
++#define TYPE_VIRTIO_RAMFB "virtio-ramfb"
++
++typedef struct VirtIORAMFB VirtIORAMFB;
++DECLARE_INSTANCE_CHECKER(VirtIORAMFB, VIRTIO_RAMFB,
++                         TYPE_VIRTIO_RAMFB)
++
++struct VirtIORAMFB {
++    VirtIORAMFBBase parent_obj;
++
++    VirtIOGPU     vdev;
++};
++
++static void virtio_ramfb_inst_initfn(Object *obj)
++{
++    VirtIORAMFB *dev = VIRTIO_RAMFB(obj);
++
++    virtio_instance_init_common(obj, &dev->vdev, sizeof(dev->vdev),
++                                TYPE_VIRTIO_GPU);
++    VIRTIO_RAMFB_BASE(dev)->vgpu = VIRTIO_GPU_BASE(&dev->vdev);
++}
++
++static VirtioPCIDeviceTypeInfo virtio_ramfb_info = {
++    .generic_name  = TYPE_VIRTIO_RAMFB,
++    .parent        = TYPE_VIRTIO_RAMFB_BASE,
++    .instance_size = sizeof(VirtIORAMFB),
++    .instance_init = virtio_ramfb_inst_initfn,
++};
++module_obj(TYPE_VIRTIO_RAMFB);
++module_kconfig(VIRTIO_GPU);
++
++static void virtio_ramfb_register_types(void)
++{
++    type_register_static(&virtio_ramfb_base_info);
++    virtio_pci_types_register(&virtio_ramfb_info);
++}
++
++type_init(virtio_ramfb_register_types)
++
++module_dep("hw-display-virtio-gpu");
+diff --git a/hw/display/virtio-ramfb.h b/hw/display/virtio-ramfb.h
+new file mode 100644
+index 0000000000..ac72f73d89
+--- /dev/null
++++ b/hw/display/virtio-ramfb.h
+@@ -0,0 +1,28 @@
++#ifndef VIRTIO_RAMFB_H
++#define VIRTIO_RAMFB_H
++
++#include "hw/virtio/virtio-gpu-pci.h"
++#include "hw/display/ramfb.h"
++#include "qom/object.h"
++
++/*
++ * virtio-ramfb-base: This extends VirtioPCIProxy.
++ */
++#define TYPE_VIRTIO_RAMFB_BASE "virtio-ramfb-base"
++OBJECT_DECLARE_TYPE(VirtIORAMFBBase, VirtIORAMFBBaseClass,
++                    VIRTIO_RAMFB_BASE)
++
++struct VirtIORAMFBBase {
++    VirtIOPCIProxy parent_obj;
++
++    VirtIOGPUBase *vgpu;
++    RAMFBState    *ramfb;
++};
++
++struct VirtIORAMFBBaseClass {
++    VirtioPCIClass parent_class;
++
++    ResettablePhases parent_phases;
++};
++
++#endif /* VIRTIO_RAMFB_H */
+diff --git a/include/hw/display/ramfb.h b/include/hw/display/ramfb.h
+index a7e0019144..d52833f3ff 100644
+--- a/include/hw/display/ramfb.h
++++ b/include/hw/display/ramfb.h
+@@ -6,6 +6,7 @@
+ /* ramfb.c */
+ typedef struct RAMFBState RAMFBState;
+ void ramfb_display_update(QemuConsole *con, RAMFBState *s);
++void ramfb_display_update_shared(QemuConsole *con, RAMFBState *s);
+ RAMFBState *ramfb_setup(Error **errp);
+ 
+ extern const VMStateDescription ramfb_vmstate;

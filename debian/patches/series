@@ -10,7 +10,8 @@ extra/0010-arm-enable-cortex-a72-kvm-support.patch
 extra/0011-cpu_common_parse_features-add-x86-format.patch
 #extra/0012-gicv3-fix-icc-ctlr-migration-across-heterogeneous-hosts.patch
 #extra/0013-arm-allow-inbound-migration-with-more-cpregs-than-local.patch
-extra/0014-backport-arm64-tpm-crb.patch 
+extra/0014-backport-arm64-tpm-crb.patch
+extra/0015-hw-display-add-virtio-ramfb-device.patch
 spice/0001-ui-spice-Add-an-option-for-users-to-provide-a-prefer.patch
 spice/0002-ui-spice-Enable-gl-on-option-for-non-local-or-remote.patch
 spice/0003-ui-spice-Submit-the-gl_draw-requests-at-60-FPS-for-r.patch
