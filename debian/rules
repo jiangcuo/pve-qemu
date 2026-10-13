@@ -17,6 +17,15 @@ machinefile := $(destdir)/usr/share/kvm/machine-versions.json
 # default QEMU out-of-tree build directory is ./build
 BUILDDIR=build
 
+# The LoongArch in-kernel irqchip (debian/patches/loongarch-irqchip) needs
+# the upstream KVM irqchip ABI, provided by the openEuler kernel >= 6.6.0-19.
+# Older kernels use shifted KVM device type numbers.
+ifeq ($(DEB_HOST_ARCH),loong64)
+KERNEL_DEPENDS := pve-kernel-6.6-openeuler (>= 6.6.0-19)
+else
+KERNEL_DEPENDS :=
+endif
+
 # FIXME: pass to configure as --extra-cflags=CFLAGS ?! also LDFLAGS?
 CFLAGS += -Wall -L/usr/lib/$(DEB_HOST_GNU_CPU)-linux-gnu
 export CC = $(DEB_HOST_GNU_CPU)-linux-gnu-gcc
@@ -165,7 +174,7 @@ binary-arch: build install
 	# Debian >= Buster has libglusterfs0 and lots of libgfFOO, upstream has the libs in glusterfs-common
 	# pass -x to dpkg-shlibdeps and specify dependencies in d/control instead
 	dh_shlibdeps -- -xlibglusterfs0 -xlibgfxdr0 -xlibgfrpc0 -xlibgfdb0 -xlibgfchangelog0 -xlibgfapi0
-	dh_gencontrol
+	dh_gencontrol -- -Vkernel:Depends="$(KERNEL_DEPENDS)"
 	dh_md5sums
 	dh_builddeb
 
