@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Richard Henderson <richard.henderson@linaro.org>
+Date: Mon, 6 Oct 2025 13:54:50 -0700
+Subject: [PATCH] hw/intc/loongarch_dintc: Set class_size for
+ LoongArchDINTCClass
+
+Fixes: 4d4baab24179 ("loongarch: add a direct interrupt controller device")
+Signed-off-by: Richard Henderson <richard.henderson@linaro.org>
+(cherry picked from commit eb7abb4a719f93ddd56571bf91681044b4159399)
+---
+ hw/intc/loongarch_dintc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/hw/intc/loongarch_dintc.c b/hw/intc/loongarch_dintc.c
+index dc8f7ffdf6..32bdd171c5 100644
+--- a/hw/intc/loongarch_dintc.c
++++ b/hw/intc/loongarch_dintc.c
+@@ -197,6 +197,7 @@ static const TypeInfo loongarch_dintc_info = {
+     .parent        = TYPE_SYS_BUS_DEVICE,
+     .instance_size = sizeof(LoongArchDINTCState),
+     .instance_init = loongarch_dintc_init,
++    .class_size    = sizeof(LoongArchDINTCClass),
+     .class_init    = loongarch_dintc_class_init,
+     .interfaces    = (const InterfaceInfo[]) {
+         { TYPE_HOTPLUG_HANDLER },

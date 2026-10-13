@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Song Gao <gaosong@loongson.cn>
+Date: Wed, 1 Jul 2026 14:54:54 +0800
+Subject: [PATCH] hw/intc/loongarch_dintc: Fix OOB access in DINT MMIO write
+ handler
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Validate guest-controlled cpu_num before using it to index the cpu[] array
+or pass to async_run_on_cpu(). Without this check, a malicious guest can
+trigger a NULL pointer dereference in async_run_on_cpu() and an
+out-of-bounds array access in qemu_set_irq(), causing host crash.
+
+Resolves: https://gitlab.com/qemu-project/qemu/-/work_items/3616
+Fixes: 0d148eaf5a3e ("hw/loongarch: Implement dintc set irq")
+Reported-by: Thomas Huth <thuth@redhat.com>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+Reported-by: huntr bubble
+Reviewed-by: Philippe Mathieu-Daudé <philmd@oss.qualcomm.com>
+Reviewed-by: Thomas Huth <thuth@redhat.com>
+Message-ID: <20260701065454.1976188-1-gaosong@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit febd672714a513b40c466e5960ef8e7fa7a6f41b)
+---
+ hw/intc/loongarch_dintc.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/hw/intc/loongarch_dintc.c b/hw/intc/loongarch_dintc.c
+index 32bdd171c5..a811431742 100644
+--- a/hw/intc/loongarch_dintc.c
++++ b/hw/intc/loongarch_dintc.c
+@@ -19,6 +19,7 @@
+ #include "target/loongarch/cpu.h"
+ #include "qemu/error-report.h"
+ #include "system/hw_accel.h"
++#include "qemu/log.h"
+ 
+ /* msg addr field */
+ FIELD(MSG_ADDR, IRQ_NUM, 4, 8)
+@@ -50,7 +51,19 @@ static void loongarch_dintc_mem_write(void *opaque, hwaddr addr,
+     CPUState *cs;
+ 
+     cpu_num = FIELD_EX64(msg_addr, MSG_ADDR, CPU_NUM);
++
++    /* Validate cpu_num against the configured number of CPUs */
++    if (cpu_num >= s->num_cpu) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "loongarch-dintc: invalid cpu number%d\n", cpu_num);
++        return;
++    }
+     cs = cpu_by_arch_id(cpu_num);
++    if (!cs) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "loongarch-dintc: no CPU for arch_id %d\n", cpu_num);
++        return;
++    }
+     irq_num = FIELD_EX64(msg_addr, MSG_ADDR, IRQ_NUM);
+ 
+     async_run_on_cpu(cs, do_set_vcpu_dintc_irq,

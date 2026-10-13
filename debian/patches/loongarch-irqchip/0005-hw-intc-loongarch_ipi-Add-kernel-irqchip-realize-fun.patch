@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Fri, 6 Jun 2025 14:30:23 +0800
+Subject: [PATCH] hw/intc/loongarch_ipi: Add kernel irqchip realize function
+
+Function kvm_ipi_realize() is added if kvm_irqchip_in_kernel() return true.
+It is to create and initialize IPI device in kernel mode.
+
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20250606063033.2557365-4-maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 412f655566bfadfe85d6f52a7e4420b418f261c3)
+---
+ hw/intc/loongarch_ipi.c         |  5 +++++
+ hw/intc/loongarch_ipi_kvm.c     | 27 +++++++++++++++++++++++++++
+ hw/intc/loongson_ipi_common.c   |  5 +++++
+ hw/intc/meson.build             |  2 ++
+ include/hw/intc/loongarch_ipi.h |  3 +++
+ 5 files changed, 42 insertions(+)
+ create mode 100644 hw/intc/loongarch_ipi_kvm.c
+
+diff --git a/hw/intc/loongarch_ipi.c b/hw/intc/loongarch_ipi.c
+index f12c0549f3..15b426a195 100644
+--- a/hw/intc/loongarch_ipi.c
++++ b/hw/intc/loongarch_ipi.c
+@@ -11,6 +11,7 @@
+ #include "qapi/error.h"
+ #include "hw/intc/loongarch_ipi.h"
+ #include "hw/qdev-properties.h"
++#include "system/kvm.h"
+ #include "target/loongarch/cpu.h"
+ 
+ static AddressSpace *get_iocsr_as(CPUState *cpu)
+@@ -91,6 +92,10 @@ static void loongarch_ipi_realize(DeviceState *dev, Error **errp)
+         lics->cpu[i].ipi = lics;
+         qdev_init_gpio_out(dev, &lics->cpu[i].irq, 1);
+     }
++
++    if (kvm_irqchip_in_kernel()) {
++        kvm_ipi_realize(dev, errp);
++    }
+ }
+ 
+ static void loongarch_ipi_reset_hold(Object *obj, ResetType type)
+diff --git a/hw/intc/loongarch_ipi_kvm.c b/hw/intc/loongarch_ipi_kvm.c
+new file mode 100644
+index 0000000000..51e9c7ed1e
+--- /dev/null
++++ b/hw/intc/loongarch_ipi_kvm.c
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * LoongArch IPI interrupt KVM support
++ *
++ * Copyright (C) 2025 Loongson Technology Corporation Limited
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "hw/intc/loongarch_ipi.h"
++#include "system/kvm.h"
++#include "target/loongarch/cpu.h"
++
++void kvm_ipi_realize(DeviceState *dev, Error **errp)
++{
++    LoongarchIPIState *lis = LOONGARCH_IPI(dev);
++    int ret;
++
++    ret = kvm_create_device(kvm_state, KVM_DEV_TYPE_LOONGARCH_IPI, false);
++    if (ret < 0) {
++        fprintf(stderr, "IPI KVM_CREATE_DEVICE failed: %s\n",
++                strerror(-ret));
++        abort();
++    }
++
++    lis->dev_fd = ret;
++}
+diff --git a/hw/intc/loongson_ipi_common.c b/hw/intc/loongson_ipi_common.c
+index f5ab5024c0..804ee7112a 100644
+--- a/hw/intc/loongson_ipi_common.c
++++ b/hw/intc/loongson_ipi_common.c
+@@ -11,6 +11,7 @@
+ #include "hw/irq.h"
+ #include "qemu/log.h"
+ #include "migration/vmstate.h"
++#include "system/kvm.h"
+ #include "trace.h"
+ 
+ MemTxResult loongson_ipi_core_readl(void *opaque, hwaddr addr, uint64_t *data,
+@@ -255,6 +256,10 @@ static void loongson_ipi_common_realize(DeviceState *dev, Error **errp)
+     LoongsonIPICommonState *s = LOONGSON_IPI_COMMON(dev);
+     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+ 
++    if (kvm_irqchip_in_kernel()) {
++        return;
++    }
++
+     memory_region_init_io(&s->ipi_iocsr_mem, OBJECT(dev),
+                           &loongson_ipi_iocsr_ops,
+                           s, "loongson_ipi_iocsr", 0x48);
+diff --git a/hw/intc/meson.build b/hw/intc/meson.build
+index 70e7548c52..1cc999771d 100644
+--- a/hw/intc/meson.build
++++ b/hw/intc/meson.build
+@@ -71,6 +71,8 @@ specific_ss.add(when: 'CONFIG_M68K_IRQC', if_true: files('m68k_irqc.c'))
+ specific_ss.add(when: 'CONFIG_LOONGSON_IPI_COMMON', if_true: files('loongson_ipi_common.c'))
+ specific_ss.add(when: 'CONFIG_LOONGSON_IPI', if_true: files('loongson_ipi.c'))
+ specific_ss.add(when: 'CONFIG_LOONGARCH_IPI', if_true: files('loongarch_ipi.c'))
++specific_ss.add(when: ['CONFIG_KVM', 'CONFIG_LOONGARCH_IPI'],
++                if_true: files('loongarch_ipi_kvm.c'))
+ specific_ss.add(when: 'CONFIG_LOONGARCH_PCH_PIC', if_true: files('loongarch_pch_pic.c', 'loongarch_pic_common.c'))
+ specific_ss.add(when: 'CONFIG_LOONGARCH_PCH_MSI', if_true: files('loongarch_pch_msi.c'))
+ specific_ss.add(when: 'CONFIG_LOONGARCH_EXTIOI', if_true: files('loongarch_extioi.c', 'loongarch_extioi_common.c'))
+diff --git a/include/hw/intc/loongarch_ipi.h b/include/hw/intc/loongarch_ipi.h
+index a7c6bf85d3..608cd09a78 100644
+--- a/include/hw/intc/loongarch_ipi.h
++++ b/include/hw/intc/loongarch_ipi.h
+@@ -16,6 +16,7 @@ OBJECT_DECLARE_TYPE(LoongarchIPIState, LoongarchIPIClass, LOONGARCH_IPI)
+ 
+ struct LoongarchIPIState {
+     LoongsonIPICommonState parent_obj;
++    int  dev_fd;
+ };
+ 
+ struct LoongarchIPIClass {
+@@ -24,4 +25,6 @@ struct LoongarchIPIClass {
+     ResettablePhases parent_phases;
+ };
+ 
++void kvm_ipi_realize(DeviceState *dev, Error **errp);
++
+ #endif

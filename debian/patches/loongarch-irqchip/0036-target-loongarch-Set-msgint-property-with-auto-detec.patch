@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Mon, 14 Sep 2026 10:14:18 +0800
+Subject: [PATCH] target/loongarch: Set msgint property with auto detected
+
+Linux kernel and KVM has supported msgint irqchip, set msgint property
+with value ON_OFF_AUTO_AUTO with max CPU type in both KVM and TCG mode.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by:   Song Gao <17746591750@163.com>
+(cherry picked from commit 6ad515b01b4b2417080c07884153ea7a62ddc871)
+---
+ target/loongarch/cpu.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index f9a3e51a92..c07e8eef8f 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -632,13 +632,11 @@ static void loongarch_max_initfn(Object *obj)
+     /* PTW is auto detected with max CPU type in KVM mode */
+     if (kvm_enabled()) {
+         cpu->ptw = ON_OFF_AUTO_AUTO;
+-        cpu->msgint = ON_OFF_AUTO_OFF;
+     }
+ 
+-    if (tcg_enabled()) {
+-        cpu->env.cpucfg[1] = FIELD_DP32(cpu->env.cpucfg[1], CPUCFG1, MSG_INT, 1);
+-        cpu->msgint = ON_OFF_AUTO_AUTO;
+-    }
++    /* msgint is auto detected in KVM mode, always available in TCG mode */
++    cpu->env.cpucfg[1] = FIELD_DP32(cpu->env.cpucfg[1], CPUCFG1, MSG_INT, 1);
++    cpu->msgint = ON_OFF_AUTO_AUTO;
+ }
+ 
+ #if defined(CONFIG_KVM)

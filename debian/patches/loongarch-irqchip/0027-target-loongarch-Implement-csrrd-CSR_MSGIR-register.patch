@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Song Gao <gaosong@loongson.cn>
+Date: Tue, 16 Sep 2025 20:21:08 +0800
+Subject: [PATCH] target/loongarch:Implement csrrd CSR_MSGIR register
+
+implement the read-clear feature for CSR_MSGIR register.
+
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+Message-ID: <20250916122109.749813-11-gaosong@loongson.cn>
+(cherry picked from commit ce47eaadbd6acb466095465049f8433459b022a8)
+---
+ target/loongarch/csr.c                        |  5 +++++
+ target/loongarch/helper.h                     |  1 +
+ target/loongarch/tcg/csr_helper.c             | 21 +++++++++++++++++++
+ .../tcg/insn_trans/trans_privileged.c.inc     |  1 +
+ 4 files changed, 28 insertions(+)
+
+diff --git a/target/loongarch/csr.c b/target/loongarch/csr.c
+index e4f9fd2441..332a1396cc 100644
+--- a/target/loongarch/csr.c
++++ b/target/loongarch/csr.c
+@@ -129,6 +129,11 @@ static CSRInfo csr_info[] = {
+     CSR_OFF(DBG),
+     CSR_OFF(DERA),
+     CSR_OFF(DSAVE),
++    CSR_OFF_ARRAY(MSGIS, 0),
++    CSR_OFF_ARRAY(MSGIS, 1),
++    CSR_OFF_ARRAY(MSGIS, 2),
++    CSR_OFF_ARRAY(MSGIS, 3),
++    CSR_OFF(MSGIR),
+ };
+ 
+ CSRInfo *get_csr(unsigned int csr_num)
+diff --git a/target/loongarch/helper.h b/target/loongarch/helper.h
+index 1d5cb0198c..db57dbfc16 100644
+--- a/target/loongarch/helper.h
++++ b/target/loongarch/helper.h
+@@ -100,6 +100,7 @@ DEF_HELPER_1(rdtime_d, i64, env)
+ DEF_HELPER_1(csrrd_pgd, i64, env)
+ DEF_HELPER_1(csrrd_cpuid, i64, env)
+ DEF_HELPER_1(csrrd_tval, i64, env)
++DEF_HELPER_1(csrrd_msgir, i64, env)
+ DEF_HELPER_2(csrwr_stlbps, i64, env, tl)
+ DEF_HELPER_2(csrwr_estat, i64, env, tl)
+ DEF_HELPER_2(csrwr_asid, i64, env, tl)
+diff --git a/target/loongarch/tcg/csr_helper.c b/target/loongarch/tcg/csr_helper.c
+index 6a7a65c860..bd2935b9bf 100644
+--- a/target/loongarch/tcg/csr_helper.c
++++ b/target/loongarch/tcg/csr_helper.c
+@@ -68,6 +68,27 @@ target_ulong helper_csrrd_tval(CPULoongArchState *env)
+     return cpu_loongarch_get_constant_timer_ticks(cpu);
+ }
+ 
++target_ulong helper_csrrd_msgir(CPULoongArchState *env)
++{
++    int irq, new;
++
++    irq = find_first_bit((unsigned long *)env->CSR_MSGIS, 256);
++    if (irq < 256) {
++        clear_bit(irq, (unsigned long *)env->CSR_MSGIS);
++        new = find_first_bit((unsigned long *)env->CSR_MSGIS, 256);
++        if (new < 256) {
++            return irq;
++        }
++
++        env->CSR_ESTAT = FIELD_DP64(env->CSR_ESTAT, CSR_ESTAT, MSGINT, 0);
++    } else {
++        /* bit 31 set 1 for no invalid irq */
++        irq = BIT(31);
++    }
++
++    return irq;
++}
++
+ target_ulong helper_csrwr_estat(CPULoongArchState *env, target_ulong val)
+ {
+     int64_t old_v = env->CSR_ESTAT;
+diff --git a/target/loongarch/tcg/insn_trans/trans_privileged.c.inc b/target/loongarch/tcg/insn_trans/trans_privileged.c.inc
+index 34cfab8879..a407ab51b7 100644
+--- a/target/loongarch/tcg/insn_trans/trans_privileged.c.inc
++++ b/target/loongarch/tcg/insn_trans/trans_privileged.c.inc
+@@ -83,6 +83,7 @@ void loongarch_csr_translate_init(void)
+     SET_CSR_FUNC(TCFG,  NULL, gen_helper_csrwr_tcfg);
+     SET_CSR_FUNC(TVAL,  gen_helper_csrrd_tval, NULL);
+     SET_CSR_FUNC(TICLR, NULL, gen_helper_csrwr_ticlr);
++    SET_CSR_FUNC(MSGIR, gen_helper_csrrd_msgir, NULL);
+ }
+ #undef SET_CSR_FUNC
+ 

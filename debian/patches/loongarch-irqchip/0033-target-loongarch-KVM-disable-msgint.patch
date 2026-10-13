@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: gaosong <gaosong@loongson.cn>
+Date: Thu, 13 Aug 2026 19:10:00 +0800
+Subject: [PATCH] target/loongarch: KVM disable msgint
+
+In KVM mode, msgint is disabled by default; please enable it manually.
+
+e.g
+   ... -cpu max,msgint=on ...
+
+Signed-off-by: gaosong <gaosong@loongson.cn>
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20260813111000.446232-4-gaosong@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 11563efaba79377d2004041da514f857c876a151)
+---
+ target/loongarch/cpu.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index a9845a784f..f9a3e51a92 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -632,10 +632,13 @@ static void loongarch_max_initfn(Object *obj)
+     /* PTW is auto detected with max CPU type in KVM mode */
+     if (kvm_enabled()) {
+         cpu->ptw = ON_OFF_AUTO_AUTO;
++        cpu->msgint = ON_OFF_AUTO_OFF;
+     }
+ 
+-    cpu->env.cpucfg[1] = FIELD_DP32(cpu->env.cpucfg[1], CPUCFG1, MSG_INT, 1);
+-    cpu->msgint = ON_OFF_AUTO_AUTO;
++    if (tcg_enabled()) {
++        cpu->env.cpucfg[1] = FIELD_DP32(cpu->env.cpucfg[1], CPUCFG1, MSG_INT, 1);
++        cpu->msgint = ON_OFF_AUTO_AUTO;
++    }
+ }
+ 
+ #if defined(CONFIG_KVM)

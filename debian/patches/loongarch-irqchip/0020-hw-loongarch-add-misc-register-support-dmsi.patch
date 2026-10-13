@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Song Gao <gaosong@loongson.cn>
+Date: Tue, 16 Sep 2025 20:21:01 +0800
+Subject: [PATCH] hw/loongarch: add misc register support dmsi
+
+Add feature register and misc register for dmsi feature checking and
+setting
+
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20250916122109.749813-4-gaosong@loongson.cn>
+(cherry picked from commit 86f4c80ab4a0d7a76d000515425d025004d6cd8b)
+---
+ hw/loongarch/virt.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/hw/loongarch/virt.c b/hw/loongarch/virt.c
+index 13e1652ea4..006a7cfbd0 100644
+--- a/hw/loongarch/virt.c
++++ b/hw/loongarch/virt.c
+@@ -684,6 +684,10 @@ static MemTxResult virt_iocsr_misc_write(void *opaque, hwaddr addr,
+             return MEMTX_OK;
+         }
+ 
++        if (virt_has_dmsi(lvms) && val & BIT_ULL(IOCSRM_DMSI_EN)) {
++            lvms->misc_status |= BIT_ULL(IOCSRM_DMSI_EN);
++        }
++
+         features = address_space_ldl(&lvms->as_iocsr,
+                                      EXTIOI_VIRT_BASE + EXTIOI_VIRT_CONFIG,
+                                      attrs, NULL);
+@@ -728,6 +732,9 @@ static MemTxResult virt_iocsr_misc_read(void *opaque, hwaddr addr,
+         break;
+     case FEATURE_REG:
+         ret = BIT(IOCSRF_MSI) | BIT(IOCSRF_EXTIOI) | BIT(IOCSRF_CSRIPI);
++        if (virt_has_dmsi(lvms)) {
++            ret |= BIT(IOCSRF_DMSI);
++        }
+         if (kvm_enabled()) {
+             ret |= BIT(IOCSRF_VM);
+         }
+@@ -753,6 +760,10 @@ static MemTxResult virt_iocsr_misc_read(void *opaque, hwaddr addr,
+         if (features & BIT(EXTIOI_ENABLE_INT_ENCODE)) {
+             ret |= BIT_ULL(IOCSRM_EXTIOI_INT_ENCODE);
+         }
++        if (virt_has_dmsi(lvms) &&
++            (lvms->misc_status & BIT_ULL(IOCSRM_DMSI_EN))) {
++            ret |= BIT_ULL(IOCSRM_DMSI_EN);
++        }
+         break;
+     default:
+         qemu_log_mask(LOG_UNIMP, "%s: Unimplemented IOCSR 0x%" HWADDR_PRIx "\n",

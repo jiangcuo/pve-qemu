@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Fri, 6 Jun 2025 14:30:26 +0800
+Subject: [PATCH] hw/intc/loongarch_pch_msi: Inject MSI interrupt to kernel
+
+If kvm_irqchip_in_kernel() return true, MSI interrupt can be injected
+with API kvm_irqchip_send_msi() to KVM.
+
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20250606063033.2557365-7-maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 5b0e05b9023793197b82fd6feb275459adc9e10c)
+---
+ hw/intc/loongarch_pch_msi.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/hw/intc/loongarch_pch_msi.c b/hw/intc/loongarch_pch_msi.c
+index bc93504ff7..ef2453e05c 100644
+--- a/hw/intc/loongarch_pch_msi.c
++++ b/hw/intc/loongarch_pch_msi.c
+@@ -13,6 +13,7 @@
+ #include "hw/pci/msi.h"
+ #include "hw/misc/unimp.h"
+ #include "migration/vmstate.h"
++#include "system/kvm.h"
+ #include "trace.h"
+ 
+ static uint64_t loongarch_msi_mem_read(void *opaque, hwaddr addr, unsigned size)
+@@ -26,6 +27,15 @@ static void loongarch_msi_mem_write(void *opaque, hwaddr addr,
+     LoongArchPCHMSI *s = (LoongArchPCHMSI *)opaque;
+     int irq_num;
+ 
++    if (kvm_irqchip_in_kernel()) {
++        MSIMessage msg;
++
++        msg.address = addr;
++        msg.data = val;
++        kvm_irqchip_send_msi(kvm_state, msg);
++        return;
++    }
++
+     /*
+      * vector number is irq number from upper extioi intc
+      * need subtract irq base to get msi vector offset

@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Song Gao <gaosong@loongson.cn>
+Date: Tue, 16 Sep 2025 20:21:07 +0800
+Subject: [PATCH] target/loongarch: Add CSR_ESTAT.bit15 and CSR_ECFG.bit15 for
+ msg interrupts.
+
+Add CSR_ESTAT.bit15 and CSR_ECFG.bit15 for DINTC irq.
+
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+Message-ID: <20250916122109.749813-10-gaosong@loongson.cn>
+(cherry picked from commit c2396bfd4892091032a482118895a02ac87ab3e0)
+---
+ target/loongarch/cpu-csr.h | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/target/loongarch/cpu-csr.h b/target/loongarch/cpu-csr.h
+index 0fcf502a58..094718cd3f 100644
+--- a/target/loongarch/cpu-csr.h
++++ b/target/loongarch/cpu-csr.h
+@@ -34,11 +34,13 @@ FIELD(CSR_MISC, ALCL, 12, 4)
+ FIELD(CSR_MISC, DWPL, 16, 3)
+ 
+ #define LOONGARCH_CSR_ECFG           0x4 /* Exception config */
+-FIELD(CSR_ECFG, LIE, 0, 13)
++FIELD(CSR_ECFG, LIE, 0, 15)        /* bit 15 is msg interrupt enabled */
++FIELD(CSR_ECFG, MSGINT, 14, 1)
+ FIELD(CSR_ECFG, VS, 16, 3)
+ 
+ #define LOONGARCH_CSR_ESTAT          0x5 /* Exception status */
+-FIELD(CSR_ESTAT, IS, 0, 13)
++FIELD(CSR_ESTAT, IS, 0, 15)        /* bit 15 is msg interrupt enabled */
++FIELD(CSR_ESTAT, MSGINT, 14, 1)
+ FIELD(CSR_ESTAT, ECODE, 16, 6)
+ FIELD(CSR_ESTAT, ESUBCODE, 22, 9)
+ 

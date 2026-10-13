@@ -1,0 +1,149 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Fri, 6 Jun 2025 14:36:07 +0800
+Subject: [PATCH] hw/loongarch/virt: Add kernel irqchip support
+
+If kvm_irqchip_in_kernel() return true, interrupt controller
+ExtIOI, IPI, PCH_PCI and PCH_MSI should be emlated in kernel. And
+it is not necessary to create memory region for these devices in
+user space.
+
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20250606063607.2557540-1-maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 27f5d500c2259650076e3abd72f092b566fd81ac)
+---
+ hw/loongarch/virt.c        | 57 ++++++++++++++++++++++----------------
+ target/loongarch/cpu.h     |  1 +
+ target/loongarch/kvm/kvm.c | 16 +++++++++++
+ 3 files changed, 50 insertions(+), 24 deletions(-)
+
+diff --git a/hw/loongarch/virt.c b/hw/loongarch/virt.c
+index bf7336fa16..d6e79d4df3 100644
+--- a/hw/loongarch/virt.c
++++ b/hw/loongarch/virt.c
+@@ -538,12 +538,6 @@ static void virt_irq_init(LoongArchVirtMachineState *lvms)
+     lvms->ipi = ipi;
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(ipi), &error_fatal);
+ 
+-    /* IPI iocsr memory region */
+-    memory_region_add_subregion(&lvms->system_iocsr, SMP_IPI_MAILBOX,
+-                   sysbus_mmio_get_region(SYS_BUS_DEVICE(ipi), 0));
+-    memory_region_add_subregion(&lvms->system_iocsr, MAIL_SEND_ADDR,
+-                   sysbus_mmio_get_region(SYS_BUS_DEVICE(ipi), 1));
+-
+     /* Create EXTIOI device */
+     extioi = qdev_new(TYPE_LOONGARCH_EXTIOI);
+     lvms->extioi = extioi;
+@@ -551,12 +545,6 @@ static void virt_irq_init(LoongArchVirtMachineState *lvms)
+         qdev_prop_set_bit(extioi, "has-virtualization-extension", true);
+     }
+     sysbus_realize_and_unref(SYS_BUS_DEVICE(extioi), &error_fatal);
+-    memory_region_add_subregion(&lvms->system_iocsr, APIC_BASE,
+-                    sysbus_mmio_get_region(SYS_BUS_DEVICE(extioi), 0));
+-    if (virt_is_veiointc_enabled(lvms)) {
+-        memory_region_add_subregion(&lvms->system_iocsr, EXTIOI_VIRT_BASE,
+-                    sysbus_mmio_get_region(SYS_BUS_DEVICE(extioi), 1));
+-    }
+ 
+     virt_cpu_irq_init(lvms);
+     pch_pic = qdev_new(TYPE_LOONGARCH_PIC);
+@@ -564,13 +552,6 @@ static void virt_irq_init(LoongArchVirtMachineState *lvms)
+     qdev_prop_set_uint32(pch_pic, "pch_pic_irq_num", num);
+     d = SYS_BUS_DEVICE(pch_pic);
+     sysbus_realize_and_unref(d, &error_fatal);
+-    memory_region_add_subregion(get_system_memory(), VIRT_IOAPIC_REG_BASE,
+-                            sysbus_mmio_get_region(d, 0));
+-
+-    /* Connect pch_pic irqs to extioi */
+-    for (i = 0; i < num; i++) {
+-        qdev_connect_gpio_out(DEVICE(d), i, qdev_get_gpio_in(extioi, i));
+-    }
+ 
+     pch_msi = qdev_new(TYPE_LOONGARCH_PCH_MSI);
+     start   =  num;
+@@ -580,12 +561,40 @@ static void virt_irq_init(LoongArchVirtMachineState *lvms)
+     d = SYS_BUS_DEVICE(pch_msi);
+     sysbus_realize_and_unref(d, &error_fatal);
+     sysbus_mmio_map(d, 0, VIRT_PCH_MSI_ADDR_LOW);
+-    for (i = 0; i < num; i++) {
+-        /* Connect pch_msi irqs to extioi */
+-        qdev_connect_gpio_out(DEVICE(d), i,
+-                              qdev_get_gpio_in(extioi, i + start));
+-    }
+ 
++    if (kvm_irqchip_in_kernel()) {
++        kvm_loongarch_init_irq_routing();
++    } else {
++        /* IPI iocsr memory region */
++        memory_region_add_subregion(&lvms->system_iocsr, SMP_IPI_MAILBOX,
++                       sysbus_mmio_get_region(SYS_BUS_DEVICE(ipi), 0));
++        memory_region_add_subregion(&lvms->system_iocsr, MAIL_SEND_ADDR,
++                       sysbus_mmio_get_region(SYS_BUS_DEVICE(ipi), 1));
++
++        /* EXTIOI iocsr memory region */
++        memory_region_add_subregion(&lvms->system_iocsr, APIC_BASE,
++                    sysbus_mmio_get_region(SYS_BUS_DEVICE(extioi), 0));
++        if (virt_is_veiointc_enabled(lvms)) {
++            memory_region_add_subregion(&lvms->system_iocsr, EXTIOI_VIRT_BASE,
++                    sysbus_mmio_get_region(SYS_BUS_DEVICE(extioi), 1));
++        }
++
++        /* PCH_PIC memory region */
++        memory_region_add_subregion(get_system_memory(), VIRT_IOAPIC_REG_BASE,
++                    sysbus_mmio_get_region(SYS_BUS_DEVICE(pch_pic), 0));
++
++        /* Connect pch_pic irqs to extioi */
++        for (i = 0; i < VIRT_PCH_PIC_IRQ_NUM; i++) {
++            qdev_connect_gpio_out(DEVICE(pch_pic), i,
++                                  qdev_get_gpio_in(extioi, i));
++        }
++
++        for (i = VIRT_PCH_PIC_IRQ_NUM; i < EXTIOI_IRQS; i++) {
++            /* Connect pch_msi irqs to extioi */
++            qdev_connect_gpio_out(DEVICE(pch_msi), i - VIRT_PCH_PIC_IRQ_NUM,
++                                  qdev_get_gpio_in(extioi, i));
++        }
++    }
+     virt_devices_init(pch_pic, lvms);
+ }
+ 
+diff --git a/target/loongarch/cpu.h b/target/loongarch/cpu.h
+index f3949ba4b6..504223d48e 100644
+--- a/target/loongarch/cpu.h
++++ b/target/loongarch/cpu.h
+@@ -547,5 +547,6 @@ static inline void kvm_loongarch_cpu_post_init(LoongArchCPU *cpu)
+ {
+ }
+ #endif
++void kvm_loongarch_init_irq_routing(void);
+ 
+ #endif /* LOONGARCH_CPU_H */
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index 8400ebdc6c..69efbbdb48 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -1333,6 +1333,22 @@ void kvm_arch_init_irq_routing(KVMState *s)
+ {
+ }
+ 
++void kvm_loongarch_init_irq_routing(void)
++{
++    int i;
++
++    kvm_async_interrupts_allowed = true;
++    kvm_msi_via_irqfd_allowed = kvm_irqfds_enabled();
++    if (kvm_has_gsi_routing()) {
++        for (i = 0; i < KVM_IRQCHIP_NUM_PINS; ++i) {
++            kvm_irqchip_add_irq_route(kvm_state, i, 0, i);
++        }
++
++        kvm_gsi_routing_allowed = true;
++        kvm_irqchip_commit_routes(kvm_state);
++    }
++}
++
+ int kvm_arch_get_default_type(MachineState *ms)
+ {
+     return 0;

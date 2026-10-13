@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Mon, 14 Sep 2026 10:14:15 +0800
+Subject: [PATCH] hw/intc/loongarch_dintc: Check irqchip in kernel mode firstly
+
+when inject MSI interrupt, check irqchip in kernel mode at first and
+then check validity of MSI message in TCG mode, since irqchip in kernel
+is used at most popular.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by:   Song Gao <17746591750@163.com>
+(cherry picked from commit 707228e7b975d4a2d0833adb59263bdb1a69bce6)
+---
+ hw/intc/loongarch_dintc.c | 19 +++++++++----------
+ 1 file changed, 9 insertions(+), 10 deletions(-)
+
+diff --git a/hw/intc/loongarch_dintc.c b/hw/intc/loongarch_dintc.c
+index e318f5eeed..3e826a9c2e 100644
+--- a/hw/intc/loongarch_dintc.c
++++ b/hw/intc/loongarch_dintc.c
+@@ -70,6 +70,15 @@ static void loongarch_dintc_mem_write(void *opaque, hwaddr addr,
+     DINTCCore *core;
+     CPUState *cs;
+ 
++    if (kvm_irqchip_in_kernel()) {
++        MSIMessage msg;
++
++        msg.address = msg_addr;
++        msg.data = val;
++        kvm_irqchip_send_msi(kvm_state, msg);
++        return;
++    }
++
+     arch_id = FIELD_EX64(msg_addr, MSG_ADDR, CPU_NUM);
+     core = loongarch_dintc_cpu_by_arch_id(s, arch_id);
+     if (!core || !core->cpu) {
+@@ -81,16 +90,6 @@ static void loongarch_dintc_mem_write(void *opaque, hwaddr addr,
+     cpu_num = core - s->cpu;
+     cs = core->cpu;
+     irq_num = FIELD_EX64(msg_addr, MSG_ADDR, IRQ_NUM);
+-
+-    if (kvm_irqchip_in_kernel()) {
+-        MSIMessage msg;
+-
+-        msg.address = msg_addr;
+-        msg.data = val;
+-        kvm_irqchip_send_msi(kvm_state, msg);
+-        return;
+-    }
+-
+     async_run_on_cpu(cs, do_set_vcpu_dintc_irq,
+                          RUN_ON_CPU_HOST_INT(irq_num));
+     qemu_set_irq(s->cpu[cpu_num].parent_irq, 1);

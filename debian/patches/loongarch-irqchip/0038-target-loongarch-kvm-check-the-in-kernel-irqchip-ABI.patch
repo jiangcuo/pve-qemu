@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lierfang Support Team <itsupport@lierfang.com>
+Date: Tue, 13 Oct 2026 23:33:00 +0800
+Subject: [PATCH] target/loongarch/kvm: check the in-kernel irqchip ABI of the
+ host kernel
+
+Older openEuler 6.6 kernels (before 6.6.0-19) implement the LoongArch
+in-kernel interrupt controllers with KVM device type numbers shifted by
+one compared to upstream Linux: IPI=13, EIOINTC=14, PCHPIC=15 instead of
+12/13/14. Using the upstream numbers there fails for the IPI and silently
+creates the wrong devices for EIOINTC and PCH-PIC.
+
+Before the in-kernel irqchip is set up, create the devices on a scratch VM
+and check that each device type really is the expected interrupt
+controller (EIOINTC answers its SW_STATUS group, PCH-PIC its register
+group). If not:
+* with kernel_irqchip=on, fail and ask for a newer host kernel
+* otherwise warn and fall back to the userspace interrupt controller
+  emulation, which is the 10.0 behaviour
+
+The in-kernel irqchip requires a host kernel >= 6.6.0-19 (openEuler
+24.03 SP4) or upstream Linux >= 6.13; DMSINTC requires upstream >= 7.1
+or the same openEuler kernel.
+---
+ target/loongarch/kvm/kvm.c | 87 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 87 insertions(+)
+
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index 5638696634..0ff7433fda 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -1428,9 +1428,96 @@ int kvm_arch_get_default_type(MachineState *ms)
+     return 0;
+ }
+ 
++/*
++ * Older openEuler 6.6 kernels (before 6.6.0-19) implement the LoongArch
++ * in-kernel interrupt controllers with KVM device type numbers shifted by
++ * one compared to upstream Linux (IPI=13, EIOINTC=14, PCHPIC=15 instead of
++ * 12/13/14). With such a kernel the upstream numbers silently create the
++ * wrong devices, so verify on a scratch VM that the device types really
++ * are the expected interrupt controllers before using the in-kernel
++ * irqchip. A scratch VM is needed because each of these devices can only
++ * be created once per VM.
++ */
++static bool kvm_loongarch_irqchip_abi_ok(MachineState *ms, KVMState *s,
++                                         Error **errp)
++{
++    static const struct {
++        uint32_t type;
++        const char *name;
++        uint32_t group;     /* attribute group only this device implements */
++        uint64_t attr;
++    } devs[] = {
++        { KVM_DEV_TYPE_LOONGARCH_IPI, "IPI", 0, 0 },
++        { KVM_DEV_TYPE_LOONGARCH_EIOINTC, "EIOINTC",
++          KVM_DEV_LOONGARCH_EXTIOI_GRP_SW_STATUS,
++          KVM_DEV_LOONGARCH_EXTIOI_SW_STATUS_NUM_CPU },
++        { KVM_DEV_TYPE_LOONGARCH_PCHPIC, "PCHPIC",
++          KVM_DEV_LOONGARCH_PCH_PIC_GRP_REGS, 0x20 /* INT_MASK */ },
++    };
++    bool ok = false;
++    int vmfd, i;
++
++    vmfd = ioctl(s->fd, KVM_CREATE_VM, kvm_arch_get_default_type(ms));
++    if (vmfd < 0) {
++        error_setg_errno(errp, errno, "failed to create scratch VM");
++        return false;
++    }
++
++    for (i = 0; i < ARRAY_SIZE(devs); i++) {
++        uint64_t buf[64] = { 0 };
++        struct kvm_create_device cd = { .type = devs[i].type };
++        struct kvm_device_attr attr = {
++            .group = devs[i].group,
++            .attr = devs[i].attr,
++            .addr = (uintptr_t)buf,
++        };
++
++        if (ioctl(vmfd, KVM_CREATE_DEVICE, &cd) < 0) {
++            error_setg(errp, "in-kernel %s (KVM device type %u) not available: %s",
++                       devs[i].name, devs[i].type, strerror(errno));
++            goto out;
++        }
++        if (devs[i].group &&
++            ioctl(cd.fd, KVM_GET_DEVICE_ATTR, &attr) < 0) {
++            error_setg(errp, "KVM device type %u is not the %s interrupt "
++                       "controller (incompatible host kernel ABI)",
++                       devs[i].type, devs[i].name);
++            close(cd.fd);
++            goto out;
++        }
++        close(cd.fd);
++    }
++    ok = true;
++
++out:
++    close(vmfd);
++    return ok;
++}
++
+ int kvm_arch_init(MachineState *ms, KVMState *s)
+ {
++    Error *local_err = NULL;
++
+     cap_has_mp_state = kvm_check_extension(s, KVM_CAP_MP_STATE);
++
++    if (s->kernel_irqchip_allowed &&
++        kvm_check_extension(s, KVM_CAP_IRQCHIP) &&
++        !kvm_loongarch_irqchip_abi_ok(ms, s, &local_err)) {
++        if (s->kernel_irqchip_required) {
++            error_report_err(local_err);
++            error_report("kernel_irqchip=on requires a host kernel with the "
++                         "upstream LoongArch KVM irqchip ABI "
++                         "(openEuler kernel >= 6.6.0-19)");
++            /* like kvm_irqchip_create(): do not fall back to TCG */
++            exit(1);
++        }
++        warn_report_err(local_err);
++        warn_report("falling back to the userspace interrupt controller "
++                    "emulation, upgrade the host kernel to use the in-kernel "
++                    "irqchip");
++        s->kernel_irqchip_allowed = false;
++    }
++
+     return 0;
+ }
+ 

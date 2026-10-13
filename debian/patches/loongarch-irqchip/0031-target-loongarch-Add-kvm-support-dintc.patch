@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Song Gao <gaosong@loongson.cn>
+Date: Thu, 13 Aug 2026 19:09:58 +0800
+Subject: [PATCH] target/loongarch: Add kvm support dintc
+
+This patch adds Kvm put/get msgint CSRs and check msgint feature.
+
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20260813111000.446232-2-gaosong@loongson.cn>
+(cherry picked from commit dd45df326e420ed5fc3c181b716ff459beb4ac9e)
+---
+ target/loongarch/cpu.c     |  6 ++--
+ target/loongarch/cpu.h     |  1 +
+ target/loongarch/kvm/kvm.c | 74 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 77 insertions(+), 4 deletions(-)
+
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index f46401324d..a9845a784f 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -634,10 +634,8 @@ static void loongarch_max_initfn(Object *obj)
+         cpu->ptw = ON_OFF_AUTO_AUTO;
+     }
+ 
+-    if (tcg_enabled()) {
+-        cpu->env.cpucfg[1] = FIELD_DP32(cpu->env.cpucfg[1], CPUCFG1, MSG_INT, 1);
+-        cpu->msgint = ON_OFF_AUTO_AUTO;
+-    }
++    cpu->env.cpucfg[1] = FIELD_DP32(cpu->env.cpucfg[1], CPUCFG1, MSG_INT, 1);
++    cpu->msgint = ON_OFF_AUTO_AUTO;
+ }
+ 
+ #if defined(CONFIG_KVM)
+diff --git a/target/loongarch/cpu.h b/target/loongarch/cpu.h
+index 592256e3ae..1bbaea1ba0 100644
+--- a/target/loongarch/cpu.h
++++ b/target/loongarch/cpu.h
+@@ -300,6 +300,7 @@ enum loongarch_features {
+     LOONGARCH_FEATURE_PV_IPI,
+     LOONGARCH_FEATURE_STEALTIME,
+     LOONGARCH_FEATURE_PTW,
++    LOONGARCH_FEATURE_MSGINT,
+ };
+ 
+ typedef struct  LoongArchBT {
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index 69efbbdb48..423d58fe63 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -35,6 +35,13 @@ const KVMCapabilityInfo kvm_arch_required_capabilities[] = {
+     KVM_CAP_LAST_INFO
+ };
+ 
++static bool kvm_cpu_has_msgint(CPUState *cs)
++{
++    LoongArchCPU *cpu = LOONGARCH_CPU(cs);
++
++    return FIELD_EX64(cpu->env.cpucfg[1], CPUCFG1, MSG_INT);
++}
++
+ static int kvm_get_stealtime(CPUState *cs)
+ {
+     CPULoongArchState *env = cpu_env(cs);
+@@ -358,6 +365,25 @@ static int kvm_loongarch_get_csr(CPUState *cs)
+ 
+     ret |= kvm_loongarch_get_pmu(cs);
+ 
++    /*
++     * CSR register MSGIS getting must be put after CSR register CSR_ESTAT,
++     * Since register CSR_ESTAT will sync software pending MSGINT status to
++     * hardware register and modify HW CSR MSGIS registers.
++     */
++    if (kvm_cpu_has_msgint(cs)) {
++        ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(0)),
++                               &sys->CSR_MSGIS[0]);
++
++        ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(1)),
++                               &sys->CSR_MSGIS[1]);
++
++        ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(2)),
++                               &sys->CSR_MSGIS[2]);
++
++        ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(3)),
++                               &sys->CSR_MSGIS[3]);
++    }
++
+     ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_TVAL),
+                            &env->CSR_TVAL);
+ 
+@@ -533,6 +559,20 @@ static int kvm_loongarch_put_csr(CPUState *cs, int level)
+ 
+     ret |= kvm_loongarch_put_pmu(cs);
+ 
++    if (kvm_cpu_has_msgint(cs)) {
++        ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(0)),
++                               &sys->CSR_MSGIS[0]);
++
++        ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(1)),
++                               &sys->CSR_MSGIS[1]);
++
++        ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(2)),
++                               &sys->CSR_MSGIS[2]);
++
++        ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(3)),
++                               &sys->CSR_MSGIS[3]);
++    }
++
+     /*
+      * timer cfg must be put at last since it is used to enable
+      * guest timer
+@@ -988,6 +1028,12 @@ static bool kvm_feature_supported(CPUState *cs, enum loongarch_features feature)
+         ret = kvm_vm_ioctl(kvm_state, KVM_HAS_DEVICE_ATTR, &attr);
+         return (ret == 0);
+ 
++    case LOONGARCH_FEATURE_MSGINT:
++        attr.group = KVM_LOONGARCH_VM_FEAT_CTRL;
++        attr.attr = KVM_LOONGARCH_VM_FEAT_MSGINT;
++        ret = kvm_vm_ioctl(kvm_state, KVM_HAS_DEVICE_ATTR, &attr);
++        return (ret == 0);
++
+     default:
+         return false;
+     }
+@@ -1161,6 +1207,28 @@ static int kvm_cpu_check_pv_features(CPUState *cs, Error **errp)
+     return 0;
+ }
+ 
++static int kvm_cpu_check_msgint(CPUState *cs, Error **errp)
++{
++    CPULoongArchState *env = cpu_env(cs);
++    LoongArchCPU *cpu = LOONGARCH_CPU(cs);
++    bool kvm_supported;
++
++    kvm_supported = kvm_feature_supported(cs, LOONGARCH_FEATURE_MSGINT);
++    env->cpucfg[1] = FIELD_DP32(env->cpucfg[1], CPUCFG1, MSG_INT, 0);
++    if (cpu->msgint == ON_OFF_AUTO_ON) {
++        if (kvm_supported) {
++            env->cpucfg[1] = FIELD_DP32(env->cpucfg[1], CPUCFG1, MSG_INT, 1);
++        } else {
++            error_setg(errp, "'msgint' feature not supported by KVM on this host");
++            return -ENOTSUP;
++        }
++    } else if ((cpu->msgint == ON_OFF_AUTO_AUTO) && kvm_supported) {
++        env->cpucfg[1] = FIELD_DP32(env->cpucfg[1], CPUCFG1, MSG_INT, 1);
++    }
++
++    return 0;
++}
++
+ int kvm_arch_pre_create_vcpu(CPUState *cpu, Error **errp)
+ {
+     return 0;
+@@ -1216,6 +1284,12 @@ int kvm_arch_init_vcpu(CPUState *cs)
+         return ret;
+     }
+ 
++    ret = kvm_cpu_check_msgint(cs, &local_err);
++    if (ret < 0) {
++        error_report_err(local_err);
++        return ret;
++    }
++
+     return 0;
+ }
+ 

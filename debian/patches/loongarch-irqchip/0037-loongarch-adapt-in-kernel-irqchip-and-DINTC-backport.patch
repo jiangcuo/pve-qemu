@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lierfang Support Team <itsupport@lierfang.com>
+Date: Tue, 13 Oct 2026 23:33:00 +0800
+Subject: [PATCH] loongarch: adapt in-kernel irqchip and DINTC backport to QEMU
+ 10.0
+
+* hw/intc/loongarch_dintc.c: 10.0 class_init takes "void *data" and
+  TypeInfo.interfaces is not const
+* target/loongarch/kvm: access the msgint CSRs through env, the upstream
+  CPUSysState (sys_state) refactoring is not part of this backport
+* linux-headers: add KVM_DEV_TYPE_LOONGARCH_DMSINTC, the DMSINTC attribute
+  group and KVM_LOONGARCH_VM_FEAT_MSGINT (upstream Linux 7.1 UAPI)
+* advertise "msgint" again in query-cpu-model-expansion
+---
+ hw/intc/loongarch_dintc.c             |  4 ++--
+ linux-headers/asm-loongarch/kvm.h     |  5 +++++
+ linux-headers/linux/kvm.h             |  2 ++
+ target/loongarch/kvm/kvm.c            | 16 ++++++++--------
+ target/loongarch/loongarch-qmp-cmds.c |  2 +-
+ 5 files changed, 18 insertions(+), 11 deletions(-)
+
+diff --git a/hw/intc/loongarch_dintc.c b/hw/intc/loongarch_dintc.c
+index 3e826a9c2e..deb6df7367 100644
+--- a/hw/intc/loongarch_dintc.c
++++ b/hw/intc/loongarch_dintc.c
+@@ -213,7 +213,7 @@ static void loongarch_dintc_cpu_unplug(HotplugHandler *hotplug_dev,
+     core->cpu = NULL;
+ }
+ 
+-static void loongarch_dintc_class_init(ObjectClass *klass, const void *data)
++static void loongarch_dintc_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(klass);
+@@ -233,7 +233,7 @@ static const TypeInfo loongarch_dintc_info = {
+     .instance_init = loongarch_dintc_init,
+     .class_size    = sizeof(LoongArchDINTCClass),
+     .class_init    = loongarch_dintc_class_init,
+-    .interfaces    = (const InterfaceInfo[]) {
++    .interfaces    = (InterfaceInfo[]) {
+         { TYPE_HOTPLUG_HANDLER },
+         { }
+     },
+diff --git a/linux-headers/asm-loongarch/kvm.h b/linux-headers/asm-loongarch/kvm.h
+index 57ba1a563b..2f8a4b17b4 100644
+--- a/linux-headers/asm-loongarch/kvm.h
++++ b/linux-headers/asm-loongarch/kvm.h
+@@ -104,6 +104,7 @@ struct kvm_fpu {
+ #define  KVM_LOONGARCH_VM_FEAT_PV_IPI		6
+ #define  KVM_LOONGARCH_VM_FEAT_PV_STEALTIME	7
+ #define  KVM_LOONGARCH_VM_FEAT_PTW		8
++#define  KVM_LOONGARCH_VM_FEAT_MSGINT		9
+ 
+ /* Device Control API on vcpu fd */
+ #define KVM_LOONGARCH_VCPU_CPUCFG	0
+@@ -153,4 +154,8 @@ struct kvm_iocsr_entry {
+ #define KVM_DEV_LOONGARCH_PCH_PIC_GRP_CTRL	        0x40000006
+ #define KVM_DEV_LOONGARCH_PCH_PIC_CTRL_INIT	        0
+ 
++#define KVM_DEV_LOONGARCH_DMSINTC_GRP_CTRL		0x40000007
++#define KVM_DEV_LOONGARCH_DMSINTC_MSG_ADDR_BASE		0x0
++#define KVM_DEV_LOONGARCH_DMSINTC_MSG_ADDR_SIZE		0x1
++
+ #endif /* __UAPI_ASM_LOONGARCH_KVM_H */
+diff --git a/linux-headers/linux/kvm.h b/linux-headers/linux/kvm.h
+index 27181b3dd8..2ad4c7c9ee 100644
+--- a/linux-headers/linux/kvm.h
++++ b/linux-headers/linux/kvm.h
+@@ -1156,6 +1156,8 @@ enum kvm_device_type {
+ #define KVM_DEV_TYPE_LOONGARCH_EIOINTC	KVM_DEV_TYPE_LOONGARCH_EIOINTC
+ 	KVM_DEV_TYPE_LOONGARCH_PCHPIC,
+ #define KVM_DEV_TYPE_LOONGARCH_PCHPIC	KVM_DEV_TYPE_LOONGARCH_PCHPIC
++	KVM_DEV_TYPE_LOONGARCH_DMSINTC,
++#define KVM_DEV_TYPE_LOONGARCH_DMSINTC	KVM_DEV_TYPE_LOONGARCH_DMSINTC
+ 
+ 	KVM_DEV_TYPE_MAX,
+ 
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index 423d58fe63..5638696634 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -372,16 +372,16 @@ static int kvm_loongarch_get_csr(CPUState *cs)
+      */
+     if (kvm_cpu_has_msgint(cs)) {
+         ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(0)),
+-                               &sys->CSR_MSGIS[0]);
++                               &env->CSR_MSGIS[0]);
+ 
+         ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(1)),
+-                               &sys->CSR_MSGIS[1]);
++                               &env->CSR_MSGIS[1]);
+ 
+         ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(2)),
+-                               &sys->CSR_MSGIS[2]);
++                               &env->CSR_MSGIS[2]);
+ 
+         ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(3)),
+-                               &sys->CSR_MSGIS[3]);
++                               &env->CSR_MSGIS[3]);
+     }
+ 
+     ret |= kvm_get_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_TVAL),
+@@ -561,16 +561,16 @@ static int kvm_loongarch_put_csr(CPUState *cs, int level)
+ 
+     if (kvm_cpu_has_msgint(cs)) {
+         ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(0)),
+-                               &sys->CSR_MSGIS[0]);
++                               &env->CSR_MSGIS[0]);
+ 
+         ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(1)),
+-                               &sys->CSR_MSGIS[1]);
++                               &env->CSR_MSGIS[1]);
+ 
+         ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(2)),
+-                               &sys->CSR_MSGIS[2]);
++                               &env->CSR_MSGIS[2]);
+ 
+         ret |= kvm_set_one_reg(cs, KVM_IOC_CSRID(LOONGARCH_CSR_MSGIS(3)),
+-                               &sys->CSR_MSGIS[3]);
++                               &env->CSR_MSGIS[3]);
+     }
+ 
+     /*
+diff --git a/target/loongarch/loongarch-qmp-cmds.c b/target/loongarch/loongarch-qmp-cmds.c
+index 1facc65a4a..bcb5f9184d 100644
+--- a/target/loongarch/loongarch-qmp-cmds.c
++++ b/target/loongarch/loongarch-qmp-cmds.c
+@@ -40,7 +40,7 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
+ }
+ 
+ static const char *cpu_model_advertised_features[] = {
+-    "lsx", "lasx", "lbt", "pmu", "kvm-pv-ipi", "kvm-steal-time",
++    "lsx", "lasx", "lbt", "pmu", "kvm-pv-ipi", "kvm-steal-time", "msgint",
+     "ptw", NULL
+ };
+ 

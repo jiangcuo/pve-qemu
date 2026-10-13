@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Fri, 6 Jun 2025 14:30:29 +0800
+Subject: [PATCH] hw/intc/loongarch_pch: Inject irq line interrupt to kernel
+
+If kvm_irqchip_in_kernel() return true, irq line interrupt can be
+injected with API kvm_set_irq() to KVM.
+
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20250606063033.2557365-10-maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 0dd6798a1adda03dcfa6304437faa8e62a193d9c)
+---
+ hw/intc/loongarch_pch_pic.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/hw/intc/loongarch_pch_pic.c b/hw/intc/loongarch_pch_pic.c
+index bb553ea50a..d83028efd0 100644
+--- a/hw/intc/loongarch_pch_pic.c
++++ b/hw/intc/loongarch_pch_pic.c
+@@ -64,6 +64,11 @@ static void pch_pic_irq_handler(void *opaque, int irq, int level)
+     assert(irq < s->irq_num);
+     trace_loongarch_pch_pic_irq_handler(irq, level);
+ 
++    if (kvm_irqchip_in_kernel()) {
++        kvm_set_irq(kvm_state, irq, !!level);
++        return;
++    }
++
+     if (s->intedge & mask) {
+         /* Edge triggered */
+         if (level) {
