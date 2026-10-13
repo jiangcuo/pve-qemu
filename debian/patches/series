@@ -1,5 +1,5 @@
 extra/0001-monitor-qmp-fix-race-with-clients-disconnecting-earl.patch
-extra/0002-ide-avoid-potential-deadlock-when-draining-during-tr.patch
+#extra/0002-ide-avoid-potential-deadlock-when-draining-during-tr.patch
 extra/0003-cpu-add-Kunpeng-920-cpu-support.patch
 extra/0004-add-qxl-on-loongarch-and-aarch64.patch
 extra/0006-add-hygon-cpu-support.patch
