@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Wed, 25 Feb 2026 09:41:28 +0800
+Subject: [PATCH] target/loongarch: Add default cpucfg3 with LA464 CPU
+
+The features shown in cpucfg3 mostly are relative with cache capability,
+QEMU does not support cache emulation and discard these features.
+However it will be better if it is the same with host machine.
+
+Here add default cpucfg3 feature information with LA464 CPU.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit ce386d1313d9c84506d9a410de8ecddfcf92da68)
+---
+ target/loongarch/cpu.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index ff6045a6f7..6a979b33a5 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -457,6 +457,22 @@ static void loongarch_la464_initfn(Object *obj)
+     data = FIELD_DP32(data, CPUCFG2, LAM, 1);
+     env->cpucfg[2] = data;
+ 
++    data = 0;
++    data = FIELD_DP32(data, CPUCFG3, CCDMA, 1);
++    data = FIELD_DP32(data, CPUCFG3, UCACC, 1);
++    data = FIELD_DP32(data, CPUCFG3, LLEXC, 1);
++    data = FIELD_DP32(data, CPUCFG3, SCDLY, 1);
++    data = FIELD_DP32(data, CPUCFG3, LLDBAR, 1);
++    data = FIELD_DP32(data, CPUCFG3, ITLBHMC, 1);
++    data = FIELD_DP32(data, CPUCFG3, ICHMC, 1);
++    data = FIELD_DP32(data, CPUCFG3, SPW_LVL, 4);
++    data = FIELD_DP32(data, CPUCFG3, SPW_HP_HF, 1);
++    if (kvm_enabled()) {
++        data = FIELD_DP32(data, CPUCFG3, RVA, 1);
++        data = FIELD_DP32(data, CPUCFG3, RVAMAX, 7);
++    }
++    env->cpucfg[3] = data;
++
+     env->cpucfg[4] = 100 * 1000 * 1000; /* Crystal frequency */
+ 
+     data = 0;

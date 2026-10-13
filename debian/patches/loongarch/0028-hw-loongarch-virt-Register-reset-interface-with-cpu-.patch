@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Sat, 6 Sep 2025 15:02:00 +0800
+Subject: [PATCH] hw/loongarch/virt: Register reset interface with cpu plug
+ callback
+
+With cpu hotplug is implemented on LoongArch virt machine, reset
+interface with hot-added CPU should be registered. Otherwise there
+will be problem if system reboots after cpu is hot-added.
+
+Now register reset interface with CPU plug callback, so that all
+cold/hot added CPUs let their reset interface registered. And remove
+reset interface with CPU unplug callback.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Igor Mammedov <imammedo@redhat.com>
+Tested-by: Song Gao <gaosong@loongson.cn>
+Message-ID: <20250906070200.3749326-4-maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit cb5ee0017fc9909916383634a3f13eae05e6fe5c)
+---
+ hw/loongarch/boot.c | 13 -------------
+ hw/loongarch/virt.c |  2 ++
+ 2 files changed, 2 insertions(+), 13 deletions(-)
+
+diff --git a/hw/loongarch/boot.c b/hw/loongarch/boot.c
+index 2024adf61c..1de155785d 100644
+--- a/hw/loongarch/boot.c
++++ b/hw/loongarch/boot.c
+@@ -311,13 +311,6 @@ static int64_t load_kernel_info(struct loongarch_boot_info *info)
+     return kernel_entry;
+ }
+ 
+-static void reset_load_elf(void *opaque)
+-{
+-    LoongArchCPU *cpu = opaque;
+-
+-    cpu_reset(CPU(cpu));
+-}
+-
+ static void fw_cfg_add_kernel_info(struct loongarch_boot_info *info,
+                                    FWCfgState *fw_cfg)
+ {
+@@ -398,12 +391,6 @@ static void loongarch_direct_kernel_boot(struct loongarch_boot_info *info)
+ void loongarch_load_kernel(MachineState *ms, struct loongarch_boot_info *info)
+ {
+     LoongArchVirtMachineState *lvms = LOONGARCH_VIRT_MACHINE(ms);
+-    int i;
+-
+-    /* register reset function */
+-    for (i = 0; i < ms->smp.cpus; i++) {
+-        qemu_register_reset(reset_load_elf, LOONGARCH_CPU(qemu_get_cpu(i)));
+-    }
+ 
+     info->kernel_filename = ms->kernel_filename;
+     info->kernel_cmdline = ms->kernel_cmdline;
+diff --git a/hw/loongarch/virt.c b/hw/loongarch/virt.c
+index 9d80b34bec..f71b629c4d 100644
+--- a/hw/loongarch/virt.c
++++ b/hw/loongarch/virt.c
+@@ -961,6 +961,7 @@ static void virt_cpu_unplug(HotplugHandler *hotplug_dev,
+     /* Notify acpi ged CPU removed */
+     hotplug_handler_unplug(HOTPLUG_HANDLER(lvms->acpi_ged), dev, &error_abort);
+ 
++    qemu_unregister_resettable(OBJECT(dev));
+     cpu_slot = virt_find_cpu_slot(MACHINE(lvms), cpu->phy_id);
+     cpu_slot->cpu = NULL;
+     return;
+@@ -986,6 +987,7 @@ static void virt_cpu_plug(HotplugHandler *hotplug_dev,
+                              &error_abort);
+     }
+ 
++    qemu_register_resettable(OBJECT(dev));
+     cpu_slot = virt_find_cpu_slot(MACHINE(lvms), cpu->phy_id);
+     cpu_slot->cpu = CPU(dev);
+     return;

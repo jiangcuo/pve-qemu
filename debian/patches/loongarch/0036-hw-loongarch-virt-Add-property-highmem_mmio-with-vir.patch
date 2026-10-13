@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Fri, 17 Oct 2025 14:45:21 +0800
+Subject: [PATCH] hw/loongarch/virt: Add property highmem_mmio with virt
+ machine
+
+On LoongArch Virt Machine, MMIO region with GPEX host bridge is
+0x40000000 -- 0x7FFFFFFF. The total size is 1G bytes and it is enough
+for emulated virtio devices basically.
+
+However on some conditions such as hostmem is added with virtio-gpu
+device, the command line is -device virtio-gpu-gl,hostmem=4G. The
+PCIE MMIO region is not enough, 64-bit high MMIO region is required.
+
+Here add property highmem_mmio with virt machine, however it brings
+out incompatible issue. Here the default value is false.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 2cb067f50fbe3b616983e7e1fc8828557f7c39eb)
+---
+ hw/loongarch/virt.c         | 20 ++++++++++++++++++++
+ include/hw/loongarch/virt.h |  1 +
+ 2 files changed, 21 insertions(+)
+
+diff --git a/hw/loongarch/virt.c b/hw/loongarch/virt.c
+index ba3a4b6f20..3935c20902 100644
+--- a/hw/loongarch/virt.c
++++ b/hw/loongarch/virt.c
+@@ -64,6 +64,20 @@ static void virt_set_veiointc(Object *obj, Visitor *v, const char *name,
+     visit_type_OnOffAuto(v, name, &lvms->veiointc, errp);
+ }
+ 
++static bool virt_get_highmem_mmio(Object *obj, Error **errp)
++{
++    LoongArchVirtMachineState *lvms = LOONGARCH_VIRT_MACHINE(obj);
++
++    return lvms->highmem_mmio;
++}
++
++static void virt_set_highmem_mmio(Object *obj, bool value, Error **errp)
++{
++    LoongArchVirtMachineState *lvms = LOONGARCH_VIRT_MACHINE(obj);
++
++    lvms->highmem_mmio = value;
++}
++
+ static PFlashCFI01 *virt_flash_create1(LoongArchVirtMachineState *lvms,
+                                        const char *name,
+                                        const char *alias_prop_name)
+@@ -1206,6 +1220,12 @@ static void virt_class_init(ObjectClass *oc, void *data)
+ #ifdef CONFIG_TPM
+     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_TPM_TIS_SYSBUS);
+ #endif
++    object_class_property_add_bool(oc, "highmem-mmio",
++                                   virt_get_highmem_mmio,
++                                   virt_set_highmem_mmio);
++    object_class_property_set_description(oc, "highmem-mmio",
++                                          "Set on/off to enable/disable high "
++                                          "memory region for PCI MMIO");
+ }
+ 
+ static const TypeInfo virt_machine_types[] = {
+diff --git a/include/hw/loongarch/virt.h b/include/hw/loongarch/virt.h
+index e735df587a..3851502682 100644
+--- a/include/hw/loongarch/virt.h
++++ b/include/hw/loongarch/virt.h
+@@ -65,6 +65,7 @@ struct LoongArchVirtMachineState {
+     DeviceState *extioi;
+     hwaddr ram_end;
+     struct GPEXConfig gpex;
++    bool highmem_mmio;
+ };
+ 
+ #define TYPE_LOONGARCH_VIRT_MACHINE  MACHINE_TYPE_NAME("virt")

@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tao Cui <cuitao@kylinos.cn>
+Date: Fri, 26 Jun 2026 13:27:40 +0800
+Subject: [PATCH] target/loongarch/kvm: pass device attr by reference to
+ kvm_vcpu_ioctl
+
+kvm_vcpu_ioctl() is variadic and reads its argument as a pointer, but
+kvm_get_stealtime(), kvm_set_stealtime() and kvm_set_pv_features() pass
+the local struct kvm_device_attr by value. It currently works because of
+how the calling convention passes large structs; pass &attr so the
+argument is passed as intended.
+
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Signed-off-by: Tao Cui <cuitao@kylinos.cn>
+Message-ID: <20260626052742.810726-3-cui.tao@linux.dev>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit f029c634ee99e70f7523a8662fe83d92c1999852)
+---
+ target/loongarch/kvm/kvm.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index 25d04999b2..c6265d0583 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -45,12 +45,12 @@ static int kvm_get_stealtime(CPUState *cs)
+         .addr = (uint64_t)&env->stealtime.guest_addr,
+     };
+ 
+-    err = kvm_vcpu_ioctl(cs, KVM_HAS_DEVICE_ATTR, attr);
++    err = kvm_vcpu_ioctl(cs, KVM_HAS_DEVICE_ATTR, &attr);
+     if (err) {
+         return 0;
+     }
+ 
+-    err = kvm_vcpu_ioctl(cs, KVM_GET_DEVICE_ATTR, attr);
++    err = kvm_vcpu_ioctl(cs, KVM_GET_DEVICE_ATTR, &attr);
+     if (err) {
+         error_report("PVTIME: KVM_GET_DEVICE_ATTR: %s", strerror(errno));
+         return err;
+@@ -69,12 +69,12 @@ static int kvm_set_stealtime(CPUState *cs)
+         .addr = (uint64_t)&env->stealtime.guest_addr,
+     };
+ 
+-    err = kvm_vcpu_ioctl(cs, KVM_HAS_DEVICE_ATTR, attr);
++    err = kvm_vcpu_ioctl(cs, KVM_HAS_DEVICE_ATTR, &attr);
+     if (err) {
+         return 0;
+     }
+ 
+-    err = kvm_vcpu_ioctl(cs, KVM_SET_DEVICE_ATTR, attr);
++    err = kvm_vcpu_ioctl(cs, KVM_SET_DEVICE_ATTR, &attr);
+     if (err) {
+         error_report("PVTIME: KVM_SET_DEVICE_ATTR %s with gpa "TARGET_FMT_lx,
+                       strerror(errno), env->stealtime.guest_addr);
+@@ -95,13 +95,13 @@ static int kvm_set_pv_features(CPUState *cs)
+         .addr = (uint64_t)&val,
+     };
+ 
+-    err = kvm_vcpu_ioctl(cs, KVM_HAS_DEVICE_ATTR, attr);
++    err = kvm_vcpu_ioctl(cs, KVM_HAS_DEVICE_ATTR, &attr);
+     if (err) {
+         return 0;
+     }
+ 
+     val = env->pv_features;
+-    err = kvm_vcpu_ioctl(cs, KVM_SET_DEVICE_ATTR, attr);
++    err = kvm_vcpu_ioctl(cs, KVM_SET_DEVICE_ATTR, &attr);
+     if (err) {
+         error_report("Fail to set pv feature "TARGET_FMT_lx " with error %s",
+                       val, strerror(errno));

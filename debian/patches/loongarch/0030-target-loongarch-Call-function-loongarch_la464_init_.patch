@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Tue, 13 Oct 2026 20:37:54 +0800
+Subject: [PATCH] target/loongarch: Call function loongarch_la464_init_csr()
+ after realized
+
+When CPU is realized, it will check capability of host and set guest
+features, such as PMU CSR register number used by VM etc. Here move
+function call with loongarch_la464_init_csr() after CPU is realized.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 411b9496ca327f333b50a6608bef75fc3f6896aa)
+[ backport: applied by hand, context differs in 10.0 ]
+---
+ target/loongarch/cpu.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index 2ae8edb8a8..68e5230f6a 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -375,11 +375,11 @@ static int loongarch_cpu_mmu_index(CPUState *cs, bool ifetch)
+     return MMU_DA_IDX;
+ }
+ 
+-static void loongarch_la464_init_csr(Object *obj)
++static void loongarch_la464_init_csr(DeviceState *dev)
+ {
+ #ifndef CONFIG_USER_ONLY
+     static bool initialized;
+-    LoongArchCPU *cpu = LOONGARCH_CPU(obj);
++    LoongArchCPU *cpu = LOONGARCH_CPU(dev);
+     CPULoongArchState *env = &cpu->env;
+     int i, num;
+ 
+@@ -503,7 +503,6 @@ static void loongarch_la464_initfn(Object *obj)
+     env->CSR_PRCFG3 = FIELD_DP64(env->CSR_PRCFG3, CSR_PRCFG3, STLB_WAYS, 7);
+     env->CSR_PRCFG3 = FIELD_DP64(env->CSR_PRCFG3, CSR_PRCFG3, STLB_SETS, 8);
+ 
+-    loongarch_la464_init_csr(obj);
+     loongarch_cpu_post_init(obj);
+ }
+ 
+@@ -712,6 +711,7 @@ static void loongarch_cpu_realizefn(DeviceState *dev, Error **errp)
+ 
+     qemu_init_vcpu(cs);
+     cpu_reset(cs);
++    loongarch_la464_init_csr(dev);
+ 
+     lacc->parent_realize(dev, errp);
+ }

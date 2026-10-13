@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Tue, 13 Oct 2026 20:40:05 +0800
+Subject: [PATCH] target/loongarch: Add PTW feature support in KVM mode
+
+Implement Hardware page table walker(PTW for short) feature in KVM mode.
+Use OnOffAuto type variable ptw to check the PTW feature. If the PTW
+feature is not supported on KVM host, there is error reported with ptw=on
+option.
+
+By default PTW feature is disabled on la464 CPU type, and auto detected
+on max CPU type.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+
+(cherry picked from commit c981119dab04ac20f86ae755a669d74fc1373cb7)
+[ backport to QEMU 10.0: only the KVM part. Upstream builds on the TCG
+  hardware PTW emulation and the msgint property, which are not part of
+  10.0, so the "ptw" property is added here by hand: off by default, auto
+  with the max/host CPU types in KVM mode, and refused in TCG mode.
+  Add KVM_LOONGARCH_VM_FEAT_PTW to linux-headers and drop the unavailable
+  "msgint" from the query-cpu-model-expansion feature list. ]
+---
+ linux-headers/asm-loongarch/kvm.h     |  1 +
+ target/loongarch/cpu.c                | 33 +++++++++++++++++++++++++
+ target/loongarch/cpu.h                |  2 ++
+ target/loongarch/kvm/kvm.c            | 35 +++++++++++++++++++++++++++
+ target/loongarch/loongarch-qmp-cmds.c |  2 +-
+ 5 files changed, 72 insertions(+), 1 deletion(-)
+
+diff --git a/linux-headers/asm-loongarch/kvm.h b/linux-headers/asm-loongarch/kvm.h
+index 5f354f5c68..57ba1a563b 100644
+--- a/linux-headers/asm-loongarch/kvm.h
++++ b/linux-headers/asm-loongarch/kvm.h
+@@ -103,6 +103,7 @@ struct kvm_fpu {
+ #define  KVM_LOONGARCH_VM_FEAT_PMU		5
+ #define  KVM_LOONGARCH_VM_FEAT_PV_IPI		6
+ #define  KVM_LOONGARCH_VM_FEAT_PV_STEALTIME	7
++#define  KVM_LOONGARCH_VM_FEAT_PTW		8
+ 
+ /* Device Control API on vcpu fd */
+ #define KVM_LOONGARCH_VCPU_CPUCFG	0
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index cf7f030f68..0f8496180d 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -623,8 +623,15 @@ static void loongarch_la132_initfn(Object *obj)
+ 
+ static void loongarch_max_initfn(Object *obj)
+ {
++    LoongArchCPU *cpu = LOONGARCH_CPU(obj);
++
+     /* '-cpu max' for TCG: we use cpu la464. */
+     loongarch_la464_initfn(obj);
++
++    /* PTW is auto detected with max CPU type in KVM mode */
++    if (kvm_enabled()) {
++        cpu->ptw = ON_OFF_AUTO_AUTO;
++    }
+ }
+ 
+ #if defined(CONFIG_KVM)
+@@ -958,6 +965,29 @@ static void loongarch_set_lasx(Object *obj, bool value, Error **errp)
+     cpu->env.cpucfg[2] = FIELD_DP32(val, CPUCFG2, LASX, value);
+ }
+ 
++static bool loongarch_get_ptw(Object *obj, Error **errp)
++{
++    return LOONGARCH_CPU(obj)->ptw != ON_OFF_AUTO_OFF;
++}
++
++static void loongarch_set_ptw(Object *obj, bool value, Error **errp)
++{
++    LoongArchCPU *cpu = LOONGARCH_CPU(obj);
++
++    cpu->ptw = value ? ON_OFF_AUTO_ON : ON_OFF_AUTO_OFF;
++
++    if (kvm_enabled()) {
++        /* kvm feature detection in function kvm_arch_init_vcpu */
++        return;
++    }
++
++    /* Hardware page table walker is not emulated in TCG mode */
++    if (value) {
++        error_setg(errp, "'ptw' feature is only supported in KVM mode");
++        cpu->ptw = ON_OFF_AUTO_OFF;
++    }
++}
++
+ void loongarch_cpu_post_init(Object *obj)
+ {
+     LoongArchCPU *cpu = LOONGARCH_CPU(obj);
+@@ -970,6 +1000,9 @@ void loongarch_cpu_post_init(Object *obj)
+                              loongarch_set_lsx);
+     object_property_add_bool(obj, "lasx", loongarch_get_lasx,
+                              loongarch_set_lasx);
++    cpu->ptw = ON_OFF_AUTO_OFF;
++    object_property_add_bool(obj, "ptw", loongarch_get_ptw,
++                             loongarch_set_ptw);
+     /* lbt is enabled only in kvm mode, not supported in tcg mode */
+     if (kvm_enabled()) {
+         kvm_loongarch_cpu_post_init(cpu);
+diff --git a/target/loongarch/cpu.h b/target/loongarch/cpu.h
+index 14226277f8..f3949ba4b6 100644
+--- a/target/loongarch/cpu.h
++++ b/target/loongarch/cpu.h
+@@ -312,6 +312,7 @@ enum loongarch_features {
+     LOONGARCH_FEATURE_PMU,
+     LOONGARCH_FEATURE_PV_IPI,
+     LOONGARCH_FEATURE_STEALTIME,
++    LOONGARCH_FEATURE_PTW,
+ };
+ 
+ typedef struct  LoongArchBT {
+@@ -445,6 +446,7 @@ struct ArchCPU {
+     OnOffAuto pmu;
+     OnOffAuto lsx;
+     OnOffAuto lasx;
++    OnOffAuto ptw;
+     OnOffAuto kvm_pv_ipi;
+     OnOffAuto kvm_steal_time;
+     int32_t socket_id;  /* socket-id of this CPU */
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index 9b3d305916..23e0969b7d 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -982,6 +982,12 @@ static bool kvm_feature_supported(CPUState *cs, enum loongarch_features feature)
+         ret = kvm_vm_ioctl(kvm_state, KVM_HAS_DEVICE_ATTR, &attr);
+         return (ret == 0);
+ 
++    case LOONGARCH_FEATURE_PTW:
++        attr.group = KVM_LOONGARCH_VM_FEAT_CTRL;
++        attr.attr = KVM_LOONGARCH_VM_FEAT_PTW;
++        ret = kvm_vm_ioctl(kvm_state, KVM_HAS_DEVICE_ATTR, &attr);
++        return (ret == 0);
++
+     default:
+         return false;
+     }
+@@ -1087,6 +1093,29 @@ static int kvm_cpu_check_pmu(CPUState *cs, Error **errp)
+     return 0;
+ }
+ 
++static int kvm_cpu_check_ptw(CPUState *cs, Error **errp)
++{
++    LoongArchCPU *cpu = LOONGARCH_CPU(cs);
++    CPULoongArchState *env = cpu_env(cs);
++    bool kvm_supported;
++
++    kvm_supported = kvm_feature_supported(cs, LOONGARCH_FEATURE_PTW);
++    if (cpu->ptw == ON_OFF_AUTO_ON) {
++        if (!kvm_supported) {
++            error_setg(errp, "'ptw' feature not supported by KVM on the host");
++            return -ENOTSUP;
++        }
++    } else if (cpu->ptw != ON_OFF_AUTO_AUTO) {
++        /* disable ptw if ON_OFF_AUTO_OFF is set */
++        kvm_supported = false;
++    }
++
++    if (kvm_supported) {
++        env->cpucfg[2] = FIELD_DP32(env->cpucfg[2], CPUCFG2, HPTW, 1);
++    }
++    return 0;
++}
++
+ static int kvm_cpu_check_pv_features(CPUState *cs, Error **errp)
+ {
+     MachineState *ms = MACHINE(qdev_get_machine());
+@@ -1177,6 +1206,12 @@ int kvm_arch_init_vcpu(CPUState *cs)
+         return ret;
+     }
+ 
++    ret = kvm_cpu_check_ptw(cs, &local_err);
++    if (ret < 0) {
++        error_report_err(local_err);
++        return ret;
++    }
++
+     return 0;
+ }
+ 
+diff --git a/target/loongarch/loongarch-qmp-cmds.c b/target/loongarch/loongarch-qmp-cmds.c
+index bcb5f9184d..1facc65a4a 100644
+--- a/target/loongarch/loongarch-qmp-cmds.c
++++ b/target/loongarch/loongarch-qmp-cmds.c
+@@ -40,7 +40,7 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
+ }
+ 
+ static const char *cpu_model_advertised_features[] = {
+-    "lsx", "lasx", "lbt", "pmu", "kvm-pv-ipi", "kvm-steal-time", "msgint",
++    "lsx", "lasx", "lbt", "pmu", "kvm-pv-ipi", "kvm-steal-time",
+     "ptw", NULL
+ };
+ 

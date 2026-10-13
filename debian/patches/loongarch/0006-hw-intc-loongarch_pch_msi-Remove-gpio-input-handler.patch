@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Thu, 10 Apr 2025 16:50:04 +0800
+Subject: [PATCH] hw/intc/loongarch_pch_msi: Remove gpio input handler
+
+MSI interrupt is triggered by writing message on specified memory address.
+In generic it is used by PCI devices, and no device is connected pch MSI
+irqchip with GPIO pin line method, here remove gpio input setting for MSI
+controller.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+Tested-by: Song Gao <gaosong@loongson.cn>
+Message-Id: <20250410085004.3577627-1-maobibo@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 9d7a951e352e7b99b8d96826ac9fdd384412137a)
+---
+ hw/intc/loongarch_pch_msi.c | 9 ---------
+ 1 file changed, 9 deletions(-)
+
+diff --git a/hw/intc/loongarch_pch_msi.c b/hw/intc/loongarch_pch_msi.c
+index 66b5c1e660..bc93504ff7 100644
+--- a/hw/intc/loongarch_pch_msi.c
++++ b/hw/intc/loongarch_pch_msi.c
+@@ -42,13 +42,6 @@ static const MemoryRegionOps loongarch_pch_msi_ops = {
+     .endianness = DEVICE_LITTLE_ENDIAN,
+ };
+ 
+-static void pch_msi_irq_handler(void *opaque, int irq, int level)
+-{
+-    LoongArchPCHMSI *s = LOONGARCH_PCH_MSI(opaque);
+-
+-    qemu_set_irq(s->pch_msi_irq[irq], level);
+-}
+-
+ static void loongarch_pch_msi_realize(DeviceState *dev, Error **errp)
+ {
+     LoongArchPCHMSI *s = LOONGARCH_PCH_MSI(dev);
+@@ -59,9 +52,7 @@ static void loongarch_pch_msi_realize(DeviceState *dev, Error **errp)
+     }
+ 
+     s->pch_msi_irq = g_new(qemu_irq, s->irq_num);
+-
+     qdev_init_gpio_out(dev, s->pch_msi_irq, s->irq_num);
+-    qdev_init_gpio_in(dev, pch_msi_irq_handler, s->irq_num);
+ }
+ 
+ static void loongarch_pch_msi_unrealize(DeviceState *dev)

@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Thu, 30 Oct 2025 16:17:24 +0800
+Subject: [PATCH] target/loongarch: Add PMU register dump support in KVM
+
+PMU is supported in KVM mode. With info registers command, PMU CSR
+registers should be dumped also. And it is not necessary in TCG mode.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit f9870fe1ec40dba64baeafa7a8b7c4763afd1673)
+---
+ target/loongarch/cpu.c |  5 +++++
+ target/loongarch/csr.c | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 37 insertions(+)
+
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index 68e5230f6a..a5f23c744b 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -398,6 +398,11 @@ static void loongarch_la464_init_csr(DeviceState *dev)
+         set_csr_flag(LOONGARCH_CSR_MERRERA, CSRFL_UNUSED);
+         set_csr_flag(LOONGARCH_CSR_MERRSAVE, CSRFL_UNUSED);
+         set_csr_flag(LOONGARCH_CSR_CTAG, CSRFL_UNUSED);
++
++        for (i = env->perf_event_num; i < MAX_PERF_EVENTS; i++) {
++            set_csr_flag(LOONGARCH_CSR_PERFCTRL(i), CSRFL_UNUSED);
++            set_csr_flag(LOONGARCH_CSR_PERFCNTR(i), CSRFL_UNUSED);
++        }
+     }
+ #endif
+ }
+diff --git a/target/loongarch/csr.c b/target/loongarch/csr.c
+index 7ea0a30450..e4f9fd2441 100644
+--- a/target/loongarch/csr.c
++++ b/target/loongarch/csr.c
+@@ -94,6 +94,38 @@ static CSRInfo csr_info[] = {
+     CSR_OFF_ARRAY(DMW, 1),
+     CSR_OFF_ARRAY(DMW, 2),
+     CSR_OFF_ARRAY(DMW, 3),
++    CSR_OFF_ARRAY(PERFCTRL, 0),
++    CSR_OFF_ARRAY(PERFCNTR, 0),
++    CSR_OFF_ARRAY(PERFCTRL, 1),
++    CSR_OFF_ARRAY(PERFCNTR, 1),
++    CSR_OFF_ARRAY(PERFCTRL, 2),
++    CSR_OFF_ARRAY(PERFCNTR, 2),
++    CSR_OFF_ARRAY(PERFCTRL, 3),
++    CSR_OFF_ARRAY(PERFCNTR, 3),
++    CSR_OFF_ARRAY(PERFCTRL, 4),
++    CSR_OFF_ARRAY(PERFCNTR, 4),
++    CSR_OFF_ARRAY(PERFCTRL, 5),
++    CSR_OFF_ARRAY(PERFCNTR, 5),
++    CSR_OFF_ARRAY(PERFCTRL, 6),
++    CSR_OFF_ARRAY(PERFCNTR, 6),
++    CSR_OFF_ARRAY(PERFCTRL, 7),
++    CSR_OFF_ARRAY(PERFCNTR, 7),
++    CSR_OFF_ARRAY(PERFCTRL, 8),
++    CSR_OFF_ARRAY(PERFCNTR, 8),
++    CSR_OFF_ARRAY(PERFCTRL, 9),
++    CSR_OFF_ARRAY(PERFCNTR, 9),
++    CSR_OFF_ARRAY(PERFCTRL, 10),
++    CSR_OFF_ARRAY(PERFCNTR, 10),
++    CSR_OFF_ARRAY(PERFCTRL, 11),
++    CSR_OFF_ARRAY(PERFCNTR, 11),
++    CSR_OFF_ARRAY(PERFCTRL, 12),
++    CSR_OFF_ARRAY(PERFCNTR, 12),
++    CSR_OFF_ARRAY(PERFCTRL, 13),
++    CSR_OFF_ARRAY(PERFCNTR, 13),
++    CSR_OFF_ARRAY(PERFCTRL, 14),
++    CSR_OFF_ARRAY(PERFCNTR, 14),
++    CSR_OFF_ARRAY(PERFCTRL, 15),
++    CSR_OFF_ARRAY(PERFCNTR, 15),
+     CSR_OFF(DBG),
+     CSR_OFF(DERA),
+     CSR_OFF(DSAVE),

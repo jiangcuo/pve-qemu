@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tao Cui <cuitao@kylinos.cn>
+Date: Fri, 26 Jun 2026 13:27:42 +0800
+Subject: [PATCH] target/loongarch/kvm: fix cpucfg sync error handling
+
+In kvm_loongarch_get_cpucfg() and kvm_loongarch_put_cpucfg(), ret is
+overwritten on each iteration, so only the last register's result is
+returned and earlier failures are lost. On a failed read, env->cpucfg[i]
+is stored from a stale or uninitialized val.
+
+Accumulate errors with ret |=, matching kvm_loongarch_get_csr()/put_csr(),
+and only update env->cpucfg[i] on a successful read. Keep the cpucfg2
+negotiation check in put_cpucfg() on a separate variable so its early
+return does not overwrite the accumulated result.
+
+Signed-off-by: Tao Cui <cuitao@kylinos.cn>
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20260626052742.810726-5-cui.tao@linux.dev>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 87da979a96afd97d05497f80f6277962c40553d4)
+---
+ target/loongarch/kvm/kvm.c | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index ae339babc7..9b3d305916 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -708,8 +708,11 @@ static int kvm_loongarch_get_cpucfg(CPUState *cs)
+     CPULoongArchState *env = cpu_env(cs);
+ 
+     for (i = 0; i < 21; i++) {
+-        ret = kvm_get_one_reg(cs, KVM_IOC_CPUCFG(i), &val);
+-        env->cpucfg[i] = (uint32_t)val;
++        int r = kvm_get_one_reg(cs, KVM_IOC_CPUCFG(i), &val);
++        ret |= r;
++        if (!r) {
++            env->cpucfg[i] = (uint32_t)val;
++        }
+     }
+     return ret;
+ }
+@@ -762,13 +765,13 @@ static int kvm_loongarch_put_cpucfg(CPUState *cs)
+ 
+     for (i = 0; i < 21; i++) {
+ 	if (i == 2) {
+-            ret = kvm_check_cpucfg2(cs);
+-            if (ret) {
+-                return ret;
++            int r = kvm_check_cpucfg2(cs);
++            if (r) {
++                return r;
+             }
+ 	}
+         val = env->cpucfg[i];
+-        ret = kvm_set_one_reg(cs, KVM_IOC_CPUCFG(i), &val);
++        ret |= kvm_set_one_reg(cs, KVM_IOC_CPUCFG(i), &val);
+     }
+     return ret;
+ }

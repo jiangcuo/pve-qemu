@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bibo Mao <maobibo@loongson.cn>
+Date: Wed, 25 Feb 2026 09:41:29 +0800
+Subject: [PATCH] target/loongarch: Add generic CPU model information
+
+On LoongArch system, CPU model name comes from IOCSR register
+LOONGARCH_IOCSR_VENDOR and LOONGARCH_IOCSR_CPUNAME. Its value
+can be initialized when CPU is created.
+
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+Reviewed-by: Song Gao <gaosong@loongson.cn>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 371c06fdff3f23134994bc620da9a9336db5ffe8)
+[ backport: also set cpu_id "3A6000" for the downstream la664 CPU type,
+  replacing its cpu_type based CPUNAME_REG special case ]
+---
+ hw/loongarch/virt.c    | 13 ++++---------
+ target/loongarch/cpu.c |  5 +++++
+ target/loongarch/cpu.h |  7 +++++++
+ 3 files changed, 16 insertions(+), 9 deletions(-)
+
+diff --git a/hw/loongarch/virt.c b/hw/loongarch/virt.c
+index 05ab8faf8d..bf7336fa16 100644
+--- a/hw/loongarch/virt.c
++++ b/hw/loongarch/virt.c
+@@ -685,7 +685,9 @@ static MemTxResult virt_iocsr_misc_read(void *opaque, hwaddr addr,
+     LoongArchVirtMachineState *lvms = LOONGARCH_VIRT_MACHINE(opaque);
+     uint64_t ret = 0;
+     int features;
++    CPULoongArchState *env;
+ 
++    env = &LOONGARCH_CPU(first_cpu)->env;
+     switch (addr) {
+     case VERSION_REG:
+         ret = 0x11ULL;
+@@ -697,17 +699,10 @@ static MemTxResult virt_iocsr_misc_read(void *opaque, hwaddr addr,
+         }
+         break;
+     case VENDOR_REG:
+-        ret = 0x6e6f73676e6f6f4cULL; /* "Loongson" */
++        ret = env->vendor_id;
+         break;
+     case CPUNAME_REG:
+-        /* Return CPU name based on machine cpu_type:
+-         * la664 → "3A6000" (0x303030364133), others → "3A5000" (0x303030354133)
+-         */
+-        if (strstr(MACHINE(lvms)->cpu_type, "la664")) {
+-            ret = 0x303030364133ULL; /* "3A6000" */
+-        } else {
+-            ret = 0x303030354133ULL; /* "3A5000" */
+-        }
++        ret = env->cpu_id;
+         break;
+     case MISC_FUNC_REG:
+         if (!virt_is_veiointc_enabled(lvms)) {
+diff --git a/target/loongarch/cpu.c b/target/loongarch/cpu.c
+index 6a979b33a5..b4d372a5aa 100644
+--- a/target/loongarch/cpu.c
++++ b/target/loongarch/cpu.c
+@@ -423,6 +423,8 @@ static void loongarch_la464_initfn(Object *obj)
+     data = FIELD_DP32(data, CPUCFG0, SERID, PRID_SERIES_LA464);
+     data = FIELD_DP32(data, CPUCFG0, VENID, PRID_VENDOR_LOONGSON);
+     env->cpucfg[0] = data;
++    memccpy((void *)&env->vendor_id, CPU_VENDOR_LOONGSON, 0, 8);
++    memccpy((void *)&env->cpu_id, CPU_MODEL_3A5000, 0, 8);
+ 
+     data = 0;
+     data = FIELD_DP32(data, CPUCFG1, ARCH, 2);
+@@ -545,6 +547,7 @@ static void loongarch_la664_initfn(Object *obj)
+     loongarch_la464_initfn(obj);
+ 
+     cpu->dtb_compatible = "loongarch,Loongson-3A6000";
++    memccpy((void *)&env->cpu_id, CPU_MODEL_3A6000, 0, 8);
+ 
+     /* PRID: Company=0x14 (Loongson), Series=0xd0 (LA664), Rev=0x00 */
+     env->cpucfg[0] = 0x0014d000;
+@@ -600,6 +603,8 @@ static void loongarch_la132_initfn(Object *obj)
+     data = FIELD_DP32(data, CPUCFG0, SERID, PRID_SERIES_LA132);
+     data = FIELD_DP32(data, CPUCFG0, VENID, PRID_VENDOR_LOONGSON);
+     env->cpucfg[0] = data;
++    memccpy((void *)&env->vendor_id, CPU_VENDOR_LOONGSON, 0, 8);
++    memccpy((void *)&env->cpu_id, CPU_MODEL_1C101, 0, 8);
+ 
+     data = 0;
+     data = FIELD_DP32(data, CPUCFG1, ARCH, 1); /* LA32 */
+diff --git a/target/loongarch/cpu.h b/target/loongarch/cpu.h
+index d63a85d0c8..401356fef0 100644
+--- a/target/loongarch/cpu.h
++++ b/target/loongarch/cpu.h
+@@ -311,6 +311,11 @@ typedef struct  LoongArchBT {
+     uint32_t ftop;
+ } lbt_t;
+ 
++#define CPU_VENDOR_LOONGSON   "Loongson"
++#define CPU_MODEL_3A5000      "3A5000"
++#define CPU_MODEL_3A6000      "3A6000"
++#define CPU_MODEL_1C101       "1C101"
++
+ typedef struct CPUArchState {
+     uint64_t gpr[32];
+     uint64_t pc;
+@@ -322,6 +327,8 @@ typedef struct CPUArchState {
+ 
+     uint32_t cpucfg[21];
+     uint32_t pv_features;
++    uint64_t vendor_id;
++    uint64_t cpu_id;
+ 
+     /* LoongArch CSRs */
+     uint64_t CSR_CRMD;

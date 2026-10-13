@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: xiaoqiang zhao <zhaoxiaoqiang007@gmail.com>
+Date: Mon, 28 Sep 2026 16:54:18 +0800
+Subject: [PATCH] hw/loongarch/virt: Fix SPCR bitwidth value
+
+Serial base_addr.width should be 8 instead of 32.
+The wrong reported data will cause ADE in FreeBSD console initialize
+process and trigger a reset loop.
+
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Signed-off-by: xiaoqiang zhao <zxq_yx_007@163.com>
+Signed-off-by: Bibo Mao <maobibo@loongson.cn>
+(cherry picked from commit 36b04d2fafe24a35b110950428ced2254c73ab4f)
+---
+ hw/loongarch/virt-acpi-build.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hw/loongarch/virt-acpi-build.c b/hw/loongarch/virt-acpi-build.c
+index 431bb2157c..2fc87bcba6 100644
+--- a/hw/loongarch/virt-acpi-build.c
++++ b/hw/loongarch/virt-acpi-build.c
+@@ -269,7 +269,7 @@ spcr_setup(GArray *table_data, BIOSLinker *linker, MachineState *machine)
+     AcpiSpcrData serial = {
+         .interface_type = 0,       /* 16550 compatible */
+         .base_addr.id = AML_AS_SYSTEM_MEMORY,
+-        .base_addr.width = 32,
++        .base_addr.width = 8,
+         .base_addr.offset = 0,
+         .base_addr.size = 1,
+         .base_addr.addr = VIRT_UART_BASE,

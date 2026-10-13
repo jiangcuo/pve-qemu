@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Tao Cui <cuitao@kylinos.cn>
+Date: Fri, 26 Jun 2026 13:27:41 +0800
+Subject: [PATCH] target/loongarch/kvm: remove redundant cpucfg failure traces
+
+kvm_get_one_reg() and kvm_set_one_reg() already trace on failure, so the
+trace_kvm_failed_get_cpucfg()/trace_kvm_failed_put_cpucfg() calls in
+kvm_loongarch_get_cpucfg() and kvm_loongarch_put_cpucfg() duplicate that.
+Remove the calls and the now-unused trace events.
+
+Signed-off-by: Tao Cui <cuitao@kylinos.cn>
+Reviewed-by: Bibo Mao <maobibo@loongson.cn>
+Message-ID: <20260626052742.810726-4-cui.tao@linux.dev>
+Signed-off-by: Song Gao <gaosong@loongson.cn>
+(cherry picked from commit 5f59ac61692b4f289f499f80b698e17f377ec59d)
+---
+ target/loongarch/kvm/kvm.c    | 6 ------
+ target/loongarch/trace-events | 2 --
+ 2 files changed, 8 deletions(-)
+
+diff --git a/target/loongarch/kvm/kvm.c b/target/loongarch/kvm/kvm.c
+index c6265d0583..ae339babc7 100644
+--- a/target/loongarch/kvm/kvm.c
++++ b/target/loongarch/kvm/kvm.c
+@@ -709,9 +709,6 @@ static int kvm_loongarch_get_cpucfg(CPUState *cs)
+ 
+     for (i = 0; i < 21; i++) {
+         ret = kvm_get_one_reg(cs, KVM_IOC_CPUCFG(i), &val);
+-        if (ret < 0) {
+-            trace_kvm_failed_get_cpucfg(strerror(errno));
+-        }
+         env->cpucfg[i] = (uint32_t)val;
+     }
+     return ret;
+@@ -772,9 +769,6 @@ static int kvm_loongarch_put_cpucfg(CPUState *cs)
+ 	}
+         val = env->cpucfg[i];
+         ret = kvm_set_one_reg(cs, KVM_IOC_CPUCFG(i), &val);
+-        if (ret < 0) {
+-            trace_kvm_failed_put_cpucfg(strerror(errno));
+-        }
+     }
+     return ret;
+ }
+diff --git a/target/loongarch/trace-events b/target/loongarch/trace-events
+index dea11edc0f..829d8e0f53 100644
+--- a/target/loongarch/trace-events
++++ b/target/loongarch/trace-events
+@@ -9,7 +9,5 @@ kvm_failed_get_mpstate(const char *msg) "Failed to get mp_state from KVM: %s"
+ kvm_failed_put_mpstate(const char *msg) "Failed to put mp_state into KVM: %s"
+ kvm_failed_get_counter(const char *msg) "Failed to get counter from KVM: %s"
+ kvm_failed_put_counter(const char *msg) "Failed to put counter into KVM: %s"
+-kvm_failed_get_cpucfg(const char *msg) "Failed to get cpucfg from KVM: %s"
+-kvm_failed_put_cpucfg(const char *msg) "Failed to put cpucfg into KVM: %s"
+ kvm_arch_handle_exit(int num) "kvm arch handle exit, the reason number: %d"
+ kvm_set_intr(int irq, int level) "kvm set interrupt, irq num: %d, level: %d"
