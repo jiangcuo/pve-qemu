@@ -1,3 +1,11 @@
+pve-qemu-kvm (10.0.12-1+vds1) pxvirt; urgency=medium
+
+  * Add the in-process RDP display backend (-rdp) on libvds: H.264/RemoteFX
+    graphics, hardware cursor, input, audio from any audiodev, text and PNG
+    clipboard over qemu-vdagent.
+
+ -- Lierfang Support Team <itsupport@lierfang.com>  Fri, 23 Oct 2026 01:57:53 +0000
+
 pve-qemu-kvm (10.0.12-1) pxvirt; urgency=medium
 
   * Add tpm-crb-device for virt

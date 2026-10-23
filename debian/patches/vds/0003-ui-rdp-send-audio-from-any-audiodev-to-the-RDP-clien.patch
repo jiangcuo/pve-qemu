@@ -1,0 +1,264 @@
+From 4b339666411b3ae94791b01a0fdd33bd7233af34 Mon Sep 17 00:00:00 2001
+From: Lierfang Support Team <itsupport@lierfang.com>
+Date: Thu, 22 Oct 2026 16:55:02 +0800
+Subject: [PATCH 3/3] ui/rdp: send audio from any audiodev to the RDP client
+
+Tap the mixed output of the sound card's backend with
+AUD_add_capture(), like the VNC audio extension, so "-audiodev none",
+"pa", "spice"... all reach the RDP client. The new "audiodev=" option
+picks the backend; without it the VM's only audiodev is used, and with
+several a warning asks for the option. A sound card on "-audiodev rdp"
+is still forwarded directly and is not captured.
+
+audio.c gains audio_get_sole_audio_state() and audio_state_driver():
+the list of audio states is private to it.
+
+Signed-off-by: Lierfang Support Team <itsupport@lierfang.com>
+---
+ audio/audio.c   | 15 +++++++++
+ audio/audio.h   |  2 ++
+ qemu-options.hx | 14 ++++++--
+ ui/meson.build  |  1 +
+ ui/rdp-audio.c  | 89 +++++++++++++++++++++++++++++++++++++++++++++++++
+ ui/rdp-core.c   |  8 +++++
+ ui/rdp.h        |  4 +++
+ ui/trace-events |  3 ++
+ 8 files changed, 133 insertions(+), 3 deletions(-)
+ create mode 100644 ui/rdp-audio.c
+
+diff --git a/audio/audio.c b/audio/audio.c
+index 4662422..79dd119 100644
+--- a/audio/audio.c
++++ b/audio/audio.c
+@@ -2250,6 +2250,21 @@ AudioState *audio_state_by_name(const char *name, Error **errp)
+     return NULL;
+ }
+ 
++/* The only audio backend, NULL if there is none or several. */
++AudioState *audio_get_sole_audio_state(bool *several)
++{
++    AudioState *s = QTAILQ_FIRST(&audio_states);
++
++    *several = s && QTAILQ_NEXT(s, list);
++    return s && !*several ? s : NULL;
++}
++
++AudiodevDriver audio_state_driver(AudioState *s)
++{
++    assert(s->dev);
++    return s->dev->driver;
++}
++
+ const char *audio_get_id(QEMUSoundCard *card)
+ {
+     if (card->state) {
+diff --git a/audio/audio.h b/audio/audio.h
+index fcc2230..8f4d58b 100644
+--- a/audio/audio.h
++++ b/audio/audio.h
+@@ -177,6 +177,8 @@ void audio_help(void);
+ 
+ AudioState *audio_state_by_name(const char *name, Error **errp);
+ AudioState *audio_get_default_audio_state(Error **errp);
++AudioState *audio_get_sole_audio_state(bool *several);
++AudiodevDriver audio_state_driver(AudioState *s);
+ const char *audio_get_id(QEMUSoundCard *card);
+ 
+ #define DEFINE_AUDIO_PROPERTIES(_s, _f)         \
+diff --git a/qemu-options.hx b/qemu-options.hx
+index 533444d..fbec599 100644
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -2271,7 +2271,8 @@ DEF("rdp", HAS_ARG, QEMU_OPTION_rdp,
+     "       [,encoder=openh264|vaapi][,rendernode=<path>]\n"
+     "       [,encoder-threads=<n>][,qp-max=<n>]\n"
+     "       [,refine-qp=<n>][,refine-delay=<ms>]\n"
+-    "       [,audio=on|off][,clipboard=on|off][,resize-on-connect=on|off]\n"
++    "       [,audio=on|off][,audiodev=<id>][,clipboard=on|off]\n"
++    "       [,resize-on-connect=on|off]\n"
+     "       [,sas-hotkey=ctrl-alt-end|off]\n"
+     "       [,debug-dir=<path>][,debug-input=on|off][,debug-video=on|off]\n"
+     "       [,log=<filter>][,log-format=text|json]\n"
+@@ -2351,8 +2352,15 @@ SRST
+         0 disables it. Default is 200.
+ 
+     ``audio=on|off``; \ ``clipboard=on|off``
+-        Enable audio playback (``-audiodev rdp``) and clipboard sharing
+-        (``qemu-vdagent`` chardev). Default is on.
++        Enable audio playback and clipboard sharing (``qemu-vdagent``
++        chardev). Default is on.
++
++    ``audiodev=<id>``
++        Audio backend whose playback is sent to the RDP client.  Any
++        driver works (``none``, ``pa``, ``spice``...): its mixed output is
++        captured.  Without this option the only ``-audiodev`` of the VM is
++        used; with several, set it explicitly.  A sound card on
++        ``-audiodev rdp`` is sent directly and needs no capture.
+ 
+     ``resize-on-connect=on|off``
+         Ask the guest to adopt the client resolution when a client
+diff --git a/ui/meson.build b/ui/meson.build
+index 1425d99..f24ca22 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -133,6 +133,7 @@ endif
+ 
+ if vds.found()
+   system_ss.add(vds, pixman, files(
++    'rdp-audio.c',
+     'rdp-clipboard.c',
+     'rdp-core.c',
+     'rdp-display.c',
+diff --git a/ui/rdp-audio.c b/ui/rdp-audio.c
+new file mode 100644
+index 0000000..930593b
+--- /dev/null
++++ b/ui/rdp-audio.c
+@@ -0,0 +1,89 @@
++/*
++ * QEMU RDP server (libvds frontend): audio capture
++ *
++ * Sends the guest's playback to the RDP client whatever audio backend the
++ * sound card uses (none, pa, pipewire, spice...): the mixed output of that
++ * backend is tapped with AUD_add_capture(), like the VNC audio extension.
++ * A sound card on "-audiodev rdp" needs no capture, audio/rdpaudio.c
++ * forwards it directly.
++ *
++ * Guest volume is already applied to the captured samples when the backend
++ * has no volume control of its own (none, wav, spice...).
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qapi/error.h"
++#include "qapi/qapi-types-audio.h"
++#include "audio/audio.h"
++#include "rdp.h"
++#include "trace.h"
++
++static struct {
++    VdsServer *server;
++    CaptureVoiceOut *cap;
++} rdp_audio;
++
++static void rdp_audio_notify(void *opaque, audcnotification_e cmd)
++{
++}
++
++static void rdp_audio_captured(void *opaque, const void *buf, int size)
++{
++    if (size > 0) {
++        vds_audio_out(rdp_audio.server, buf, size / sizeof(int16_t));
++    }
++}
++
++static void rdp_audio_destroy(void *opaque)
++{
++}
++
++void rdp_audio_capture_init(VdsServer *server, const char *audiodev,
++                            Error **errp)
++{
++    struct audio_capture_ops ops = {
++        .notify = rdp_audio_notify,
++        .capture = rdp_audio_captured,
++        .destroy = rdp_audio_destroy,
++    };
++    /* What libvds sends over rdpsnd. */
++    struct audsettings as = {
++        .freq = 48000,
++        .nchannels = 2,
++        .fmt = AUDIO_FORMAT_S16,
++        .endianness = AUDIO_HOST_ENDIANNESS,
++    };
++    AudioState *s;
++    bool several;
++
++    if (audiodev) {
++        s = audio_state_by_name(audiodev, errp);
++        if (!s) {
++            return;
++        }
++    } else {
++        s = audio_get_sole_audio_state(&several);
++        if (!s) {
++            /* No backend at all is fine: the VM has no sound card. */
++            if (several) {
++                warn_report("rdp: several audio backends, set audiodev= "
++                            "to send audio to RDP clients");
++            }
++            return;
++        }
++    }
++    if (audio_state_driver(s) == AUDIODEV_DRIVER_RDP) {
++        return;
++    }
++
++    trace_rdp_audio_capture(audiodev ?: "(sole)",
++                            AudiodevDriver_str(audio_state_driver(s)));
++    rdp_audio.server = server;
++    rdp_audio.cap = AUD_add_capture(s, &as, &ops, NULL);
++    if (!rdp_audio.cap) {
++        error_setg(errp, "rdp: cannot capture audio");
++    }
++}
+diff --git a/ui/rdp-core.c b/ui/rdp-core.c
+index add1b24..a58ed11 100644
+--- a/ui/rdp-core.c
++++ b/ui/rdp-core.c
+@@ -68,6 +68,7 @@ static QemuOptsList qemu_rdp_opts = {
+         { .name = "refine-delay", .type = QEMU_OPT_NUMBER },
+         { .name = "egfx-mixed", .type = QEMU_OPT_BOOL },
+         { .name = "audio", .type = QEMU_OPT_BOOL },
++        { .name = "audiodev", .type = QEMU_OPT_STRING },
+         { .name = "clipboard", .type = QEMU_OPT_BOOL },
+         { .name = "resize-on-connect", .type = QEMU_OPT_BOOL },
+         { .name = "sas-hotkey", .type = QEMU_OPT_STRING },
+@@ -497,6 +498,13 @@ void qemu_rdp_init(Error **errp)
+     if (cfg.clipboard) {
+         rdp_clipboard_init(rdp.server);
+     }
++    if (cfg.audio) {
++        rdp_audio_capture_init(rdp.server, qemu_opt_get(opts, "audiodev"),
++                               errp);
++        if (*errp) {
++            return;
++        }
++    }
+ 
+     rdp.exit_notifier.notify = rdp_exit_notify;
+     qemu_add_exit_notifier(&rdp.exit_notifier);
+diff --git a/ui/rdp.h b/ui/rdp.h
+index 870b4c3..d75a64c 100644
+--- a/ui/rdp.h
++++ b/ui/rdp.h
+@@ -32,6 +32,10 @@ void rdp_input_pointer_rel(int32_t dx, int32_t dy);
+ void rdp_input_button(uint32_t button, bool down);
+ void rdp_input_wheel(int32_t dx, int32_t dy);
+ 
++/* rdp-audio.c */
++void rdp_audio_capture_init(VdsServer *server, const char *audiodev,
++                            Error **errp);
++
+ /* rdp-clipboard.c */
+ void rdp_clipboard_init(VdsServer *server);
+ void rdp_clipboard_client_grab(const uint32_t *types, uint32_t count);
+diff --git a/ui/trace-events b/ui/trace-events
+index 76365bc..dbbabaf 100644
+--- a/ui/trace-events
++++ b/ui/trace-events
+@@ -188,6 +188,9 @@ rdp_display_layout_unsupported(uint32_t head) "head=%u"
+ rdp_input_lock_sync(int scroll, int num, int caps, int leds) "scroll=%d num=%d caps=%d leds=0x%x"
+ rdp_input_wheel(int32_t dx, int32_t dy) "dx=%d dy=%d"
+ 
++# rdp-audio.c
++rdp_audio_capture(const char *audiodev, const char *driver) "audiodev=%s driver=%s"
++
+ # rdp-clipboard.c
+ rdp_clipboard_to_client(size_t bytes) "bytes=%zu"
+ rdp_clipboard_from_client(size_t bytes) "bytes=%zu"
+-- 
+2.47.3
+

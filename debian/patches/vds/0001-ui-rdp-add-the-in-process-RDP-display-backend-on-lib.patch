@@ -1,0 +1,2459 @@
+From f868bfb53aee8ba87bd46927b25b29d750d38180 Mon Sep 17 00:00:00 2001
+From: Lierfang Support Team <itsupport@lierfang.com>
+Date: Thu, 22 Oct 2026 10:04:32 +0800
+Subject: [PATCH 1/3] ui/rdp: add the in-process RDP display backend on libvds
+
+Add `-rdp`, an in-process RDP server built on libvds (ABI 2.0):
+
+- ui/rdp-core.c: options, password/expiry, QMP/HMP `info rdp`,
+  `encoder=openh264|vaapi` and `rendernode=`.
+- ui/rdp-display.c: hands shareable guest framebuffers to libvds with
+  vds_head_attach_shared() and reports damage with vds_head_damage();
+  other surfaces keep the copy path. Buffers are released from a
+  main-loop bottom half.
+- ui/rdp-input.c: keyboard, pointer and wheel (clamped to 16 notches
+  per event).
+- ui/rdp-clipboard.c: text clipboard through the QEMU clipboard.
+- audio/rdpaudio.c: `-audiodev rdp` playback backend.
+
+Signed-off-by: Lierfang Support Team <itsupport@lierfang.com>
+---
+ audio/audio.c                 |   3 +
+ audio/audio_template.h        |   4 +
+ audio/meson.build             |   1 +
+ audio/rdpaudio.c              | 161 ++++++++
+ hmp-commands-info.hx          |  15 +
+ include/monitor/hmp.h         |   1 +
+ include/monitor/qmp-helpers.h |   4 +
+ include/ui/qemu-rdp.h         |  20 +
+ meson.build                   |  13 +
+ meson_options.txt             |   2 +
+ monitor/qmp-cmds.c            |   3 +
+ qapi/audio.json               |   3 +
+ qapi/misc.json                |   6 +-
+ qapi/ui.json                  | 214 +++++++++-
+ qemu-options.hx               | 130 +++++++
+ scripts/meson-buildoptions.sh |   3 +
+ system/vl.c                   |  16 +
+ ui/meson.build                |   9 +
+ ui/rdp-clipboard.c            | 176 +++++++++
+ ui/rdp-core.c                 | 709 ++++++++++++++++++++++++++++++++++
+ ui/rdp-display.c              | 369 ++++++++++++++++++
+ ui/rdp-input.c                | 134 +++++++
+ ui/rdp.h                      |  42 ++
+ ui/trace-events               |  22 ++
+ ui/ui-qmp-cmds.c              |  16 +
+ 25 files changed, 2071 insertions(+), 5 deletions(-)
+ create mode 100644 audio/rdpaudio.c
+ create mode 100644 include/ui/qemu-rdp.h
+ create mode 100644 ui/rdp-clipboard.c
+ create mode 100644 ui/rdp-core.c
+ create mode 100644 ui/rdp-display.c
+ create mode 100644 ui/rdp-input.c
+ create mode 100644 ui/rdp.h
+
+diff --git a/audio/audio.c b/audio/audio.c
+index 3f5baf0..4662422 100644
+--- a/audio/audio.c
++++ b/audio/audio.c
+@@ -2041,6 +2041,9 @@ void audio_create_pdos(Audiodev *dev)
+ #ifdef CONFIG_AUDIO_SNDIO
+         CASE(SNDIO, sndio, );
+ #endif
++#ifdef CONFIG_RDP
++        CASE(RDP, rdp, );
++#endif
+ #ifdef CONFIG_SPICE
+         CASE(SPICE, spice, );
+ #endif
+diff --git a/audio/audio_template.h b/audio/audio_template.h
+index 7ccfec0..581aa1e 100644
+--- a/audio/audio_template.h
++++ b/audio/audio_template.h
+@@ -381,6 +381,10 @@ AudiodevPerDirectionOptions *glue(audio_get_pdo_, TYPE)(Audiodev *dev)
+     case AUDIODEV_DRIVER_SNDIO:
+         return dev->u.sndio.TYPE;
+ #endif
++#ifdef CONFIG_RDP
++    case AUDIODEV_DRIVER_RDP:
++        return dev->u.rdp.TYPE;
++#endif
+ #ifdef CONFIG_SPICE
+     case AUDIODEV_DRIVER_SPICE:
+         return dev->u.spice.TYPE;
+diff --git a/audio/meson.build b/audio/meson.build
+index 59f0a43..24fc120 100644
+--- a/audio/meson.build
++++ b/audio/meson.build
+@@ -8,6 +8,7 @@ system_ss.add(files(
+ ))
+ 
+ system_ss.add(when: coreaudio, if_true: files('coreaudio.m'))
++system_ss.add(when: vds, if_true: files('rdpaudio.c'))
+ system_ss.add(when: dsound, if_true: files('dsoundaudio.c', 'audio_win_int.c'))
+ 
+ audio_modules = {}
+diff --git a/audio/rdpaudio.c b/audio/rdpaudio.c
+new file mode 100644
+index 0000000..19ccc6f
+--- /dev/null
++++ b/audio/rdpaudio.c
+@@ -0,0 +1,161 @@
++/*
++ * QEMU RDP server (libvds frontend): audiodev driver "rdp"
++ *
++ * Playback is forwarded to the RDP client (rdpsnd, 48 kHz s16 stereo).
++ * Recording is not supported by libvds yet: capture returns silence.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qapi/error.h"
++#include "ui/rdp.h"
++
++#define AUDIO_CAP "rdp"
++#include "audio.h"
++#include "audio_int.h"
++
++typedef struct RdpVoiceOut {
++    HWVoiceOut hw;
++    RateCtl rate;
++} RdpVoiceOut;
++
++typedef struct RdpVoiceIn {
++    HWVoiceIn hw;
++    RateCtl rate;
++} RdpVoiceIn;
++
++static void rdp_audio_settings(struct audsettings *as)
++{
++    as->freq = 48000;
++    as->nchannels = 2;
++    as->fmt = AUDIO_FORMAT_S16;
++    as->endianness = AUDIO_HOST_ENDIANNESS;
++}
++
++static void *rdp_audio_init(Audiodev *dev, Error **errp)
++{
++    return &rdp_audio_init;
++}
++
++static void rdp_audio_fini(void *opaque)
++{
++}
++
++static int rdp_init_out(HWVoiceOut *hw, struct audsettings *as,
++                        void *drv_opaque)
++{
++    RdpVoiceOut *out = container_of(hw, RdpVoiceOut, hw);
++    struct audsettings settings;
++
++    rdp_audio_settings(&settings);
++    audio_pcm_init_info(&hw->info, &settings);
++    hw->samples = 480 * 4;
++    audio_rate_start(&out->rate);
++    return 0;
++}
++
++static void rdp_fini_out(HWVoiceOut *hw)
++{
++}
++
++static size_t rdp_write(HWVoiceOut *hw, void *buf, size_t len)
++{
++    RdpVoiceOut *out = container_of(hw, RdpVoiceOut, hw);
++    size_t bytes = audio_rate_get_bytes(&out->rate, &hw->info, len);
++    VdsServer *server = qemu_rdp_server();
++
++    if (server && bytes) {
++        vds_audio_out(server, buf, bytes / sizeof(int16_t));
++    }
++    return bytes;
++}
++
++static void rdp_enable_out(HWVoiceOut *hw, bool enable)
++{
++    RdpVoiceOut *out = container_of(hw, RdpVoiceOut, hw);
++
++    if (enable) {
++        audio_rate_start(&out->rate);
++    }
++}
++
++static void rdp_volume_out(HWVoiceOut *hw, Volume *vol)
++{
++    VdsServer *server = qemu_rdp_server();
++
++    if (server && vol->channels == 2) {
++        vds_audio_volume(server, vol->vol[0] * 257, vol->vol[1] * 257,
++                         vol->mute);
++    }
++}
++
++static int rdp_init_in(HWVoiceIn *hw, struct audsettings *as,
++                       void *drv_opaque)
++{
++    RdpVoiceIn *in = container_of(hw, RdpVoiceIn, hw);
++    struct audsettings settings;
++
++    rdp_audio_settings(&settings);
++    audio_pcm_init_info(&hw->info, &settings);
++    hw->samples = 480 * 4;
++    audio_rate_start(&in->rate);
++    return 0;
++}
++
++static void rdp_fini_in(HWVoiceIn *hw)
++{
++}
++
++static size_t rdp_read(HWVoiceIn *hw, void *buf, size_t size)
++{
++    RdpVoiceIn *in = container_of(hw, RdpVoiceIn, hw);
++    size_t bytes = audio_rate_get_bytes(&in->rate, &hw->info, size);
++
++    audio_pcm_info_clear_buf(&hw->info, buf, bytes / hw->info.bytes_per_frame);
++    return bytes;
++}
++
++static void rdp_enable_in(HWVoiceIn *hw, bool enable)
++{
++    RdpVoiceIn *in = container_of(hw, RdpVoiceIn, hw);
++
++    if (enable) {
++        audio_rate_start(&in->rate);
++    }
++}
++
++static struct audio_pcm_ops rdp_pcm_ops = {
++    .init_out = rdp_init_out,
++    .fini_out = rdp_fini_out,
++    .write = rdp_write,
++    .buffer_get_free = audio_generic_buffer_get_free,
++    .run_buffer_out = audio_generic_run_buffer_out,
++    .enable_out = rdp_enable_out,
++    .volume_out = rdp_volume_out,
++
++    .init_in = rdp_init_in,
++    .fini_in = rdp_fini_in,
++    .read = rdp_read,
++    .run_buffer_in = audio_generic_run_buffer_in,
++    .enable_in = rdp_enable_in,
++};
++
++static struct audio_driver rdp_audio_driver = {
++    .name = "rdp",
++    .descr = "RDP audio (libvds)",
++    .init = rdp_audio_init,
++    .fini = rdp_audio_fini,
++    .pcm_ops = &rdp_pcm_ops,
++    .max_voices_out = 1,
++    .max_voices_in = 1,
++    .voice_size_out = sizeof(RdpVoiceOut),
++    .voice_size_in = sizeof(RdpVoiceIn),
++};
++
++static void register_audio_rdp(void)
++{
++    audio_driver_register(&rdp_audio_driver);
++}
++type_init(register_audio_rdp);
+diff --git a/hmp-commands-info.hx b/hmp-commands-info.hx
+index c59cd66..77ab38d 100644
+--- a/hmp-commands-info.hx
++++ b/hmp-commands-info.hx
+@@ -430,6 +430,21 @@ SRST
+     Show the spice server status.
+ ERST
+ 
++#if defined(CONFIG_RDP)
++    {
++        .name       = "rdp",
++        .args_type  = "",
++        .params     = "",
++        .help       = "show the RDP server status",
++        .cmd        = hmp_info_rdp,
++    },
++#endif
++
++SRST
++  ``info rdp``
++    Show the RDP server status.
++ERST
++
+     {
+         .name       = "name",
+         .args_type  = "",
+diff --git a/include/monitor/hmp.h b/include/monitor/hmp.h
+index ae116d9..79cb504 100644
+--- a/include/monitor/hmp.h
++++ b/include/monitor/hmp.h
+@@ -34,6 +34,7 @@ void hmp_info_migrate_parameters(Monitor *mon, const QDict *qdict);
+ void hmp_info_cpus(Monitor *mon, const QDict *qdict);
+ void hmp_info_vnc(Monitor *mon, const QDict *qdict);
+ void hmp_info_spice(Monitor *mon, const QDict *qdict);
++void hmp_info_rdp(Monitor *mon, const QDict *qdict);
+ void hmp_info_balloon(Monitor *mon, const QDict *qdict);
+ void hmp_info_pic(Monitor *mon, const QDict *qdict);
+ void hmp_info_pci(Monitor *mon, const QDict *qdict);
+diff --git a/include/monitor/qmp-helpers.h b/include/monitor/qmp-helpers.h
+index 318c335..99cea5c 100644
+--- a/include/monitor/qmp-helpers.h
++++ b/include/monitor/qmp-helpers.h
+@@ -18,6 +18,10 @@ bool qmp_add_client_spice(int fd, bool has_skipauth, bool skipauth,
+ bool qmp_add_client_vnc(int fd, bool has_skipauth, bool skipauth,
+                         bool has_tls, bool tls, Error **errp);
+ #endif
++#ifdef CONFIG_RDP
++bool qmp_add_client_rdp(int fd, bool has_skipauth, bool skipauth,
++                        bool has_tls, bool tls, Error **errp);
++#endif
+ #ifdef CONFIG_DBUS_DISPLAY
+ bool qmp_add_client_dbus_display(int fd, bool has_skipauth, bool skipauth,
+                         bool has_tls, bool tls, Error **errp);
+diff --git a/include/ui/qemu-rdp.h b/include/ui/qemu-rdp.h
+new file mode 100644
+index 0000000..f0df20b
+--- /dev/null
++++ b/include/ui/qemu-rdp.h
+@@ -0,0 +1,20 @@
++/*
++ * QEMU RDP server (libvds frontend): hooks used outside ui/rdp-*.c
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QEMU_RDP_H
++#define QEMU_RDP_H
++
++#include "qapi/qapi-types-ui.h"
++
++/* Starts the RDP server if -rdp was given. */
++void qemu_rdp_init(Error **errp);
++
++/* QMP set_password / expire_password, protocol "rdp". */
++void qemu_rdp_set_password(const char *password, SetPasswordAction connected,
++                           SetPasswordOptionsRdp *opts, Error **errp);
++void qemu_rdp_set_password_expiry(time_t when, Error **errp);
++
++#endif /* QEMU_RDP_H */
+diff --git a/meson.build b/meson.build
+index f94d84e..28b07f2 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1340,6 +1340,17 @@ if get_option('spice') \
+ endif
+ spice_headers = spice.partial_dependency(compile_args: true, includes: true)
+ 
++vds = not_found
++if get_option('rdp') \
++             .disable_auto_if(not have_system) \
++             .require(pixman.found(),
++                      error_message: 'cannot enable RDP if pixman is not available') \
++             .allowed()
++  vds = dependency('vds-1', version: '>=0.1.0',
++                   required: get_option('rdp'),
++                   method: 'pkg-config')
++endif
++
+ rt = cc.find_library('rt', required: false)
+ 
+ libiscsi = not_found
+@@ -2583,6 +2594,7 @@ config_host_data.set('CONFIG_SPICE_PROTOCOL_MINOR', spice_protocol.version().spl
+ config_host_data.set('CONFIG_SPICE_PROTOCOL_MICRO', spice_protocol.version().split('.')[2])
+ endif
+ config_host_data.set('CONFIG_SPICE', spice.found())
++config_host_data.set('CONFIG_RDP', vds.found())
+ config_host_data.set('CONFIG_X11', x11.found())
+ config_host_data.set('CONFIG_DBUS_DISPLAY', dbus_display)
+ config_host_data.set('CONFIG_CFI', get_option('cfi'))
+@@ -4747,6 +4759,7 @@ if vnc.found()
+   summary_info += {'VNC SASL support':  sasl}
+   summary_info += {'VNC JPEG support':  jpeg}
+ endif
++summary_info += {'RDP server (libvds)': vds}
+ summary_info += {'spice protocol support': spice_protocol}
+ if spice_protocol.found()
+   summary_info += {'  spice server support': spice}
+diff --git a/meson_options.txt b/meson_options.txt
+index 59d973b..1ca24a1 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -204,6 +204,8 @@ option('rbd', type : 'feature', value : 'auto',
+        description: 'Ceph block device driver')
+ option('opengl', type : 'feature', value : 'auto',
+        description: 'OpenGL support')
++option('rdp', type : 'feature', value : 'auto',
++       description: 'RDP server support (libvds)')
+ option('rdma', type : 'feature', value : 'auto',
+        description: 'Enable RDMA-based migration')
+ option('gtk', type : 'feature', value : 'auto',
+diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
+index 1ca44fb..dbba55e 100644
+--- a/monitor/qmp-cmds.c
++++ b/monitor/qmp-cmds.c
+@@ -128,6 +128,9 @@ void qmp_add_client(const char *protocol, const char *fdname,
+ #endif
+ #ifdef CONFIG_DBUS_DISPLAY
+         { "@dbus-display", qmp_add_client_dbus_display },
++#endif
++#ifdef CONFIG_RDP
++        { "rdp", qmp_add_client_rdp },
+ #endif
+     };
+     int fd, i;
+diff --git a/qapi/audio.json b/qapi/audio.json
+index dd5a58d..b188bc3 100644
+--- a/qapi/audio.json
++++ b/qapi/audio.json
+@@ -481,6 +481,7 @@
+             { 'name': 'pipewire', 'if': 'CONFIG_AUDIO_PIPEWIRE' },
+             { 'name': 'sdl', 'if': 'CONFIG_AUDIO_SDL' },
+             { 'name': 'sndio', 'if': 'CONFIG_AUDIO_SNDIO' },
++            { 'name': 'rdp', 'if': 'CONFIG_RDP' },
+             { 'name': 'spice', 'if': 'CONFIG_SPICE' },
+             'wav' ] }
+ 
+@@ -526,6 +527,8 @@
+                    'if': 'CONFIG_AUDIO_SDL' },
+     'sndio':     { 'type': 'AudiodevSndioOptions',
+                    'if': 'CONFIG_AUDIO_SNDIO' },
++    'rdp':       { 'type': 'AudiodevGenericOptions',
++                   'if': 'CONFIG_RDP' },
+     'spice':     { 'type': 'AudiodevGenericOptions',
+                    'if': 'CONFIG_SPICE' },
+     'wav':       'AudiodevWavOptions' } }
+diff --git a/qapi/misc.json b/qapi/misc.json
+index 559b66f..94a012e 100644
+--- a/qapi/misc.json
++++ b/qapi/misc.json
+@@ -17,14 +17,14 @@
+ # If the FD associated with @fdname is not a socket, the command will
+ # fail and the FD will be closed.
+ #
+-# @protocol: protocol name.  Valid names are "vnc", "spice",
++# @protocol: protocol name.  Valid names are "vnc", "spice", "rdp",
+ #     "@dbus-display" or the name of a character device (e.g. from
+ #     -chardev id=XXXX)
+ #
+ # @fdname: file descriptor name previously passed via 'getfd' command
+ #
+-# @skipauth: whether to skip authentication.  Only applies to "vnc"
+-#     and "spice" protocols
++# @skipauth: whether to skip authentication.  Only applies to "vnc",
++#     "spice" and "rdp" protocols
+ #
+ # @tls: whether to perform TLS.  Only applies to the "spice" protocol
+ #
+diff --git a/qapi/ui.json b/qapi/ui.json
+index c536d4e..0d0df98 100644
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -17,7 +17,7 @@
+ # Since: 7.0
+ ##
+ { 'enum': 'DisplayProtocol',
+-  'data': [ 'vnc', 'spice' ] }
++  'data': [ 'vnc', 'spice', { 'name': 'rdp', 'if': 'CONFIG_RDP' } ] }
+ 
+ ##
+ # @SetPasswordAction:
+@@ -44,6 +44,7 @@
+ # @protocol:
+ #     - 'vnc' to modify the VNC server password
+ #     - 'spice' to modify the Spice server password
++#     - 'rdp' to modify the RDP server credentials
+ #
+ # @password: the new password
+ #
+@@ -58,7 +59,30 @@
+             'password': 'str',
+             '*connected': 'SetPasswordAction' },
+   'discriminator': 'protocol',
+-  'data': { 'vnc': 'SetPasswordOptionsVnc' } }
++  'data': { 'vnc': 'SetPasswordOptionsVnc',
++            'rdp': { 'type': 'SetPasswordOptionsRdp',
++                     'if': 'CONFIG_RDP' } } }
++
++##
++# @SetPasswordOptionsRdp:
++#
++# Options for set_password specific to the RDP protocol.
++#
++# @username: user name clients must present.  Defaults to the
++#     @username option of -rdp.
++#
++# @domain: domain clients must present.  Defaults to none.
++#
++# @one-time: invalidate the password after the first successful
++#     login.  Defaults to false.
++#
++# Since: 10.0
++##
++{ 'struct': 'SetPasswordOptionsRdp',
++  'data': { '*username': 'str',
++            '*domain': 'str',
++            '*one-time': 'bool' },
++  'if': 'CONFIG_RDP' }
+ 
+ ##
+ # @SetPasswordOptionsVnc:
+@@ -99,6 +123,7 @@
+ # @protocol:
+ #     - 'vnc' to modify the VNC server expiration
+ #     - 'spice' to modify the Spice server expiration
++#     - 'rdp' to modify the RDP server expiration
+ #
+ # @time: when to expire the password.
+ #
+@@ -153,6 +178,191 @@
+ ##
+ { 'command': 'expire_password', 'boxed': true, 'data': 'ExpirePasswordOptions' }
+ 
++##
++# @RdpClientInfo:
++#
++# Information about a connected RDP client.
++#
++# @sid: session id, unique within this QEMU instance
++#
++# @peer: remote address ("host:port"), empty if unknown
++#
++# @user: authenticated user name, if any
++#
++# @codec: graphics codec in use ("avc420" or "legacy"), once
++#     negotiated
++#
++# @connected-at: connection time in seconds since the Unix epoch
++#
++# @fps: measured frames per second over the last second
++#
++# @bitrate-kbps: measured video bitrate in kbit/s over the last
++#     second
++#
++# @rtt-ms: round-trip time in milliseconds, if measured
++#
++# Since: 10.0
++##
++{ 'struct': 'RdpClientInfo',
++  'data': { 'sid': 'int',
++            'peer': 'str',
++            '*user': 'str',
++            '*codec': 'str',
++            'connected-at': 'int',
++            'fps': 'int',
++            'bitrate-kbps': 'int',
++            '*rtt-ms': 'int' },
++  'if': 'CONFIG_RDP' }
++
++##
++# @RdpInfo:
++#
++# Information about the RDP server.
++#
++# @enabled: true if the RDP server is enabled
++#
++# @host: listening address, if listening
++#
++# @port: listening port, if listening
++#
++# @auth: authentication method ("none", "tls" or "nla")
++#
++# @clients: connected clients
++#
++# @debug-dir: directory collecting the per-session diagnostic files, if
++#     debugging is enabled
++#
++# @debug-input: whether client keyboard and mouse events are recorded in
++#     input.csv (keys are redacted)
++#
++# @debug-video: whether the encoded video stream is recorded in
++#     video-headN.h264
++#
++# Since: 10.0
++##
++{ 'struct': 'RdpInfo',
++  'data': { 'enabled': 'bool',
++            '*host': 'str',
++            '*port': 'int',
++            '*auth': 'str',
++            'clients': ['RdpClientInfo'],
++            '*debug-dir': 'str',
++            '*debug-input': 'bool',
++            '*debug-video': 'bool' },
++  'if': 'CONFIG_RDP' }
++
++##
++# @query-rdp:
++#
++# Returns information about the RDP server.
++#
++# Since: 10.0
++#
++# .. qmp-example::
++#
++#     -> { "execute": "query-rdp" }
++#     <- { "return": { "enabled": true, "host": "127.0.0.1",
++#                      "port": 3389, "auth": "nla",
++#                      "clients": [ { "sid": 1,
++#                                     "peer": "127.0.0.1:52000",
++#                                     "user": "vdi", "codec": "avc420",
++#                                     "connected-at": 1760000000,
++#                                     "fps": 30, "bitrate-kbps": 2400,
++#                                     "rtt-ms": 3 } ] } }
++##
++{ 'command': 'query-rdp', 'returns': 'RdpInfo',
++  'if': 'CONFIG_RDP' }
++
++##
++# @RdpEventClient:
++#
++# RDP client in an event.
++#
++# @sid: session id
++#
++# @peer: remote address ("host:port"), empty if unknown
++#
++# @user: authenticated user name, if any
++#
++# Since: 10.0
++##
++{ 'struct': 'RdpEventClient',
++  'data': { 'sid': 'int', 'peer': 'str', '*user': 'str' },
++  'if': 'CONFIG_RDP' }
++
++##
++# @RDP_CONNECTED:
++#
++# Emitted when an RDP client opens a connection, before
++# authentication.
++#
++# @client: the client
++#
++# Since: 10.0
++##
++{ 'event': 'RDP_CONNECTED',
++  'data': { 'client': 'RdpEventClient' },
++  'if': 'CONFIG_RDP' }
++
++##
++# @RDP_INITIALIZED:
++#
++# Emitted when an RDP client is authenticated and its session is set
++# up.
++#
++# @client: the client
++#
++# Since: 10.0
++##
++{ 'event': 'RDP_INITIALIZED',
++  'data': { 'client': 'RdpEventClient' },
++  'if': 'CONFIG_RDP' }
++
++##
++# @RDP_DISCONNECTED:
++#
++# Emitted when an RDP connection is closed.
++#
++# @client: the client
++#
++# @reason: why the connection ended
++#
++# Since: 10.0
++##
++{ 'event': 'RDP_DISCONNECTED',
++  'data': { 'client': 'RdpEventClient', 'reason': 'str' },
++  'if': 'CONFIG_RDP' }
++
++##
++# @rdp-set-debug:
++#
++# Enable or disable the optional RDP debug traces at runtime. The files
++# written for every connection (session.log, client.json, frames.csv,
++# pointer.csv, audio.csv) follow the debug directory given to -rdp
++# debug-dir; this command only turns the optional ones on and off.
++#
++# @input: record client keyboard and mouse events in input.csv. Keys
++#     that type text are recorded as "char" without their scancode.
++#
++# @video: record the encoded Annex-B video stream in video-headN.h264.
++#
++# @pdu: record the decrypted client PDUs in client-pdus.bin (reserved,
++#     not implemented yet).
++#
++# Errors:
++#     - If -rdp debug-dir was not given.
++#
++# Since: 10.0
++#
++# .. qmp-example::
++#
++#     -> { "execute": "rdp-set-debug", "arguments": { "input": true } }
++#     <- { "return": {} }
++##
++{ 'command': 'rdp-set-debug',
++  'data': { '*input': 'bool', '*video': 'bool', '*pdu': 'bool' },
++  'if': 'CONFIG_RDP' }
++
+ ##
+ # @ImageFormat:
+ #
+diff --git a/qemu-options.hx b/qemu-options.hx
+index 396eea7..533444d 100644
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -2263,6 +2263,136 @@ SRST
+     Use C-a h for help on switching between the console and monitor.
+ ERST
+ 
++#ifdef CONFIG_RDP
++DEF("rdp", HAS_ARG, QEMU_OPTION_rdp,
++    "-rdp [addr=addr][,port=port][,tls-creds=<id>][,auth=none|tls|nla]\n"
++    "       [,username=<name>][,password-secret=<secret-id>]\n"
++    "       [,codecs=avc420:remotefx:bitmap][,max-fps=<n>][,bitrate=<kbps>]\n"
++    "       [,encoder=openh264|vaapi][,rendernode=<path>]\n"
++    "       [,encoder-threads=<n>][,qp-max=<n>]\n"
++    "       [,refine-qp=<n>][,refine-delay=<ms>]\n"
++    "       [,audio=on|off][,clipboard=on|off][,resize-on-connect=on|off]\n"
++    "       [,sas-hotkey=ctrl-alt-end|off]\n"
++    "       [,debug-dir=<path>][,debug-input=on|off][,debug-video=on|off]\n"
++    "       [,log=<filter>][,log-format=text|json]\n"
++    "                enable the RDP server (libvds)\n",
++    QEMU_ARCH_ALL)
++#endif
++SRST
++``-rdp option[,option[,...]]``
++    Enable the RDP server. Clients negotiate the graphics codec: EGFX
++    AVC420 (openh264, or VA-API with encoder=vaapi) when supported, otherwise RemoteFX or plain bitmaps.
++    GL displays (virgl, vfio display) need ``-display egl-headless`` so
++    that frames are read back for RDP. Valid options are
++
++    ``addr=<addr>``
++        IP address to listen on. Default is ``127.0.0.1``.
++
++    ``port=<nr>``
++        TCP port to listen on. Without it, no socket is opened and
++        clients can only be added with the QMP ``add_client`` command.
++
++    ``tls-creds=<id>``
++        ID of a ``tls-creds-x509`` object (``endpoint=server``) providing
++        ``server-cert.pem`` and ``server-key.pem``. Without it, a
++        self-signed certificate is generated at start.
++
++    ``auth=none|tls|nla``
++        Authentication method. ``nla`` (default) uses TLS and CredSSP;
++        ``tls`` checks the password sent in the Client Info PDU;
++        ``none`` accepts every client.
++
++    ``username=<name>``
++        User name clients must present. Default is empty.
++
++    ``password-secret=<secret-id>``
++        ID of a ``secret`` object holding the initial password. The
++        password can be changed at runtime with ``set_password`` and
++        ``expire_password`` (protocol ``rdp``).
++
++    ``codecs=<list>``
++        Allowed codecs, separated by ``:``, among ``avc420``,
++        ``remotefx`` and ``bitmap``. Default is all. The order of
++        preference is fixed.
++
++    ``max-fps=<n>``
++        Frame rate cap per display (1 to 120). Default is 60.
++
++    ``bitrate=<kbps>``
++        Maximum video bitrate. Default is automatic.
++
++    ``encoder-threads=<n>``
++        openh264 threads per display. Default is 2.
++
++    ``encoder=openh264|vaapi``
++        H.264 encoder. ``openh264`` encodes on the CPU. ``vaapi`` encodes
++        on the GPU, colour conversion included, and needs libvds built with
++        its ``vaapi`` feature; when it is unavailable libvds falls back to
++        openh264. Default is ``openh264``.
++
++    ``rendernode=<path>``
++        DRM render node used by ``encoder=vaapi``, for example
++        ``/dev/dri/renderD128``. Default lets FFmpeg pick one.
++
++    ``qp-max=<n>``
++        Highest quantizer the encoder may use (1 to 51). The picture is never
++        blurred past this point: when the bitrate cannot pay for a frame,
++        the frame is simply larger than the budget, and the automatic
++        bitrate adaptation answers a client that cannot keep up instead.
++        51 is H.264's own limit, i.e. no ceiling. Default is 30.
++
++    ``refine-qp=<n>``
++        Quantizer of a refinement frame, which re-sends a static area
++        that was encoded too coarsely (1 to 51, at most ``qp-max``).
++        Default is 10.
++
++    ``refine-delay=<ms>``
++        Delay after which static areas are re-encoded at high quality;
++        0 disables it. Default is 200.
++
++    ``audio=on|off``; \ ``clipboard=on|off``
++        Enable audio playback (``-audiodev rdp``) and clipboard sharing
++        (``qemu-vdagent`` chardev). Default is on.
++
++    ``resize-on-connect=on|off``
++        Ask the guest to adopt the client resolution when a client
++        connects. Default is on.
++
++    ``sas-hotkey=ctrl-alt-end|off``
++        What the client's Ctrl+Alt+End turns into for the guest. Clients
++        cannot send Ctrl+Alt+Del itself (their own operating system eats
++        it), so they send Ctrl+Alt+End and expect the server to inject the
++        secure attention sequence; ``ctrl-alt-end`` (the default) does
++        that, matching mstsc. ``off`` injects the keys the client sent.
++        Only left Ctrl and left Alt count: right Alt (AltGr) types text.
++
++    ``debug-dir=<path>``
++        Collect per-session diagnostic files. Every connection gets
++        ``<path>/<vm-name>-<pid>/session-<sid>-<time>/`` containing a
++        ``session.log`` (that session's debug-level log, independent of
++        ``log``), ``client.json`` (what the client announced), and
++        ``frames.csv``, ``pointer.csv`` and ``audio.csv`` traces. Use
++        ``debug-dir=on`` for ``%TEMP%\\vds`` (Windows) or ``/tmp/vds``.
++        Disabled by default. The flags can also be changed at runtime
++        with the QMP command ``rdp-set-debug``.
++
++    ``debug-input=on|off``
++        Additionally record client keyboard and mouse events in
++        ``input.csv``. Modifiers and non-character keys (Ctrl, Alt,
++        Delete, F1-F12, arrows, ...) are recorded with their scancode;
++        keys that type text are recorded as ``char`` without a scancode,
++        so the file never contains what was typed. Default is off.
++
++    ``debug-video=on|off``
++        Additionally record the encoded video stream in
++        ``video-head<N>.h264`` (Annex-B, playable with ``ffplay``). Files
++        rotate at 200 MB. Default is off.
++
++    ``log=<filter>``; \ ``log-format=text|json``
++        libvds log filter (e.g. ``info,vds_rdp=debug``) and format.
++        Logs are written to stderr.
++ERST
++
+ #ifdef CONFIG_SPICE
+ DEF("spice", HAS_ARG, QEMU_OPTION_spice,
+     "-spice [port=port][,tls-port=secured-port][,x509-dir=<dir>]\n"
+diff --git a/scripts/meson-buildoptions.sh b/scripts/meson-buildoptions.sh
+index 3e8e008..95ef816 100644
+--- a/scripts/meson-buildoptions.sh
++++ b/scripts/meson-buildoptions.sh
+@@ -176,6 +176,7 @@ meson_options_help() {
+   printf "%s\n" '  qpl             Query Processing Library support'
+   printf "%s\n" '  rbd             Ceph block device driver'
+   printf "%s\n" '  rdma            Enable RDMA-based migration'
++  printf "%s\n" '  rdp             RDP server support (libvds)'
+   printf "%s\n" '  replication     replication support'
+   printf "%s\n" '  rust            Rust support'
+   printf "%s\n" '  rutabaga-gfx    rutabaga_gfx support'
+@@ -460,6 +461,8 @@ _meson_option_parse() {
+     --disable-rbd) printf "%s" -Drbd=disabled ;;
+     --enable-rdma) printf "%s" -Drdma=enabled ;;
+     --disable-rdma) printf "%s" -Drdma=disabled ;;
++    --enable-rdp) printf "%s" -Drdp=enabled ;;
++    --disable-rdp) printf "%s" -Drdp=disabled ;;
+     --enable-relocatable) printf "%s" -Drelocatable=true ;;
+     --disable-relocatable) printf "%s" -Drelocatable=false ;;
+     --enable-replication) printf "%s" -Dreplication=enabled ;;
+diff --git a/system/vl.c b/system/vl.c
+index ec93988..24eb386 100644
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -114,6 +114,9 @@
+ #include "system/confidential-guest-support.h"
+ 
+ #include "ui/qemu-spice.h"
++#ifdef CONFIG_RDP
++#include "ui/qemu-rdp.h"
++#endif
+ #include "qapi/string-input-visitor.h"
+ #include "qapi/opts-visitor.h"
+ #include "qapi/clone-visitor.h"
+@@ -2698,6 +2701,9 @@ static void qemu_init_displays(void)
+     if (using_spice) {
+         qemu_spice.display_init();
+     }
++#ifdef CONFIG_RDP
++    qemu_rdp_init(&error_fatal);
++#endif
+ }
+ 
+ static void qemu_init_board(void)
+@@ -3587,6 +3593,16 @@ void qemu_init(int argc, char **argv)
+             case QEMU_OPTION_readconfig:
+                 qemu_read_config_file(optarg, qemu_parse_config_group, &error_fatal);
+                 break;
++#ifdef CONFIG_RDP
++            case QEMU_OPTION_rdp:
++                opts = qemu_opts_parse_noisily(qemu_find_opts("rdp"), optarg,
++                                               false);
++                if (!opts) {
++                    exit(1);
++                }
++                display_remote++;
++                break;
++#endif
+ #ifdef CONFIG_SPICE
+             case QEMU_OPTION_spice:
+                 opts = qemu_opts_parse_noisily(qemu_find_opts("spice"), optarg, false);
+diff --git a/ui/meson.build b/ui/meson.build
+index 35fb04c..1425d99 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -131,6 +131,15 @@ if sdl.found()
+   ui_modules += {'sdl' : sdl_ss}
+ endif
+ 
++if vds.found()
++  system_ss.add(vds, pixman, files(
++    'rdp-clipboard.c',
++    'rdp-core.c',
++    'rdp-display.c',
++    'rdp-input.c',
++  ))
++endif
++
+ if spice.found()
+   spice_core_ss = ss.source_set()
+   spice_core_ss.add(spice, pixman, files(
+diff --git a/ui/rdp-clipboard.c b/ui/rdp-clipboard.c
+new file mode 100644
+index 0000000..1650d21
+--- /dev/null
++++ b/ui/rdp-clipboard.c
+@@ -0,0 +1,176 @@
++/*
++ * QEMU RDP server (libvds frontend): clipboard
++ *
++ * Bridges the RDP client clipboard with the QEMU clipboard (guest side:
++ * qemu-vdagent chardev + spice-vdagent). Text only, like the QEMU
++ * clipboard itself.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "ui/clipboard.h"
++#include "rdp.h"
++#include "trace.h"
++
++static struct {
++    VdsServer *server;
++    QemuClipboardPeer peer;
++    /* Latest guest clipboard (owned by another peer). */
++    QemuClipboardInfo *guest;
++    /* The client asked for guest text not available yet. */
++    bool client_waiting;
++    /* Clipboard published on behalf of the client. */
++    QemuClipboardInfo *client;
++    /*
++     * Loop breaker.  Announcing the guest clipboard to the client makes the
++     * client send its own format list back; without this, that answer is
++     * published to the guest again and the guest agent answers with another
++     * grab, which fills the qemu-vdagent output buffer (ui/vdagent.c).
++     */
++    bool guest_text;
++    bool client_regrabbed;
++} rdp_cb;
++
++static void rdp_clipboard_send_guest_text(QemuClipboardInfo *info)
++{
++    if (!info->types[QEMU_CLIPBOARD_TYPE_TEXT].data) {
++        return;
++    }
++    rdp_cb.client_waiting = false;
++    trace_rdp_clipboard_to_client(info->types[QEMU_CLIPBOARD_TYPE_TEXT].size);
++    vds_clipboard_data(rdp_cb.server, VDS_CLIPBOARD_TEXT,
++                       info->types[QEMU_CLIPBOARD_TYPE_TEXT].data,
++                       info->types[QEMU_CLIPBOARD_TYPE_TEXT].size);
++}
++
++static void rdp_clipboard_update_info(QemuClipboardInfo *info)
++{
++    uint32_t text = VDS_CLIPBOARD_TEXT;
++
++    if (info->owner == &rdp_cb.peer ||
++        info->selection != QEMU_CLIPBOARD_SELECTION_CLIPBOARD) {
++        return;
++    }
++    if (info != rdp_cb.guest) {
++        bool available = info->types[QEMU_CLIPBOARD_TYPE_TEXT].available;
++
++        qemu_clipboard_info_unref(rdp_cb.guest);
++        rdp_cb.guest = qemu_clipboard_info_ref(info);
++        if (available) {
++            /*
++             * The agent answers a host grab with a grab of its own.  If the
++             * client already published a grab since we last announced the
++             * guest clipboard, this is the echo of that announcement: do not
++             * bounce it back to the client, it would loop forever.
++             */
++            if (!(rdp_cb.guest_text && rdp_cb.client_regrabbed)) {
++                vds_clipboard_grab(rdp_cb.server, &text, 1);
++            }
++        } else {
++            vds_clipboard_release(rdp_cb.server);
++        }
++        rdp_cb.guest_text = available;
++        rdp_cb.client_regrabbed = false;
++        return;
++    }
++    /* Same info: data we asked for may have arrived. */
++    if (rdp_cb.client_waiting) {
++        rdp_clipboard_send_guest_text(info);
++    }
++}
++
++static void rdp_clipboard_notify(Notifier *notifier, void *data)
++{
++    QemuClipboardNotify *notify = data;
++
++    switch (notify->type) {
++    case QEMU_CLIPBOARD_UPDATE_INFO:
++        rdp_clipboard_update_info(notify->info);
++        break;
++    case QEMU_CLIPBOARD_RESET_SERIAL:
++        break;
++    }
++}
++
++/* The guest pastes data the client owns. */
++static void rdp_clipboard_request(QemuClipboardInfo *info,
++                                  QemuClipboardType type)
++{
++    if (type == QEMU_CLIPBOARD_TYPE_TEXT) {
++        vds_clipboard_request(rdp_cb.server, VDS_CLIPBOARD_TEXT);
++    }
++}
++
++void rdp_clipboard_init(VdsServer *server)
++{
++    rdp_cb.server = server;
++    rdp_cb.peer.name = "rdp";
++    rdp_cb.peer.notifier.notify = rdp_clipboard_notify;
++    rdp_cb.peer.request = rdp_clipboard_request;
++    qemu_clipboard_peer_register(&rdp_cb.peer);
++}
++
++void rdp_clipboard_client_grab(const uint32_t *types, uint32_t count)
++{
++    QemuClipboardInfo *info;
++    uint32_t i;
++    bool text = false;
++
++    if (!rdp_cb.server) {
++        return;
++    }
++    for (i = 0; i < count; i++) {
++        text |= types[i] == VDS_CLIPBOARD_TEXT;
++    }
++    trace_rdp_clipboard_client_grab(text);
++    rdp_cb.client_regrabbed = true;
++    info = qemu_clipboard_info_new(&rdp_cb.peer,
++                                   QEMU_CLIPBOARD_SELECTION_CLIPBOARD);
++    info->types[QEMU_CLIPBOARD_TYPE_TEXT].available = text;
++    qemu_clipboard_info_unref(rdp_cb.client);
++    rdp_cb.client = qemu_clipboard_info_ref(info);
++    qemu_clipboard_update(info);
++    qemu_clipboard_info_unref(info);
++}
++
++void rdp_clipboard_client_release(void)
++{
++    if (!rdp_cb.server) {
++        return;
++    }
++    qemu_clipboard_peer_release(&rdp_cb.peer,
++                                QEMU_CLIPBOARD_SELECTION_CLIPBOARD);
++    qemu_clipboard_info_unref(rdp_cb.client);
++    rdp_cb.client = NULL;
++}
++
++/* The client pastes data the guest owns. */
++void rdp_clipboard_client_request(uint32_t type)
++{
++    QemuClipboardInfo *info = rdp_cb.guest;
++
++    if (!rdp_cb.server || type != VDS_CLIPBOARD_TEXT || !info ||
++        !info->types[QEMU_CLIPBOARD_TYPE_TEXT].available) {
++        return;
++    }
++    if (info->types[QEMU_CLIPBOARD_TYPE_TEXT].data) {
++        rdp_clipboard_send_guest_text(info);
++        return;
++    }
++    rdp_cb.client_waiting = true;
++    qemu_clipboard_request(info, QEMU_CLIPBOARD_TYPE_TEXT);
++}
++
++/* Client data for a guest paste. */
++void rdp_clipboard_client_data(uint32_t type, const uint8_t *data, size_t len)
++{
++    if (!rdp_cb.server || type != VDS_CLIPBOARD_TEXT || !rdp_cb.client ||
++        !qemu_clipboard_peer_owns(&rdp_cb.peer,
++                                  QEMU_CLIPBOARD_SELECTION_CLIPBOARD)) {
++        return;
++    }
++    trace_rdp_clipboard_from_client(len);
++    qemu_clipboard_set_data(&rdp_cb.peer, rdp_cb.client,
++                            QEMU_CLIPBOARD_TYPE_TEXT, len, data, true);
++}
+diff --git a/ui/rdp-core.c b/ui/rdp-core.c
+new file mode 100644
+index 0000000..add1b24
+--- /dev/null
++++ b/ui/rdp-core.c
+@@ -0,0 +1,709 @@
++/*
++ * QEMU RDP server (libvds frontend): options, server lifecycle, QMP
++ *
++ * libvds runs its own threads. It wakes the main loop through the
++ * "wakeup" callback (any thread) which only schedules a bottom half; the
++ * bottom half calls vds_server_dispatch(), so every other callback runs in
++ * the main thread with the BQL held.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/config-file.h"
++#include "qemu/error-report.h"
++#include "qemu/main-loop.h"
++#include "qemu/notify.h"
++#include "qemu/option.h"
++#include "qapi/error.h"
++#include "qapi/qapi-commands-ui.h"
++#include "qapi/qapi-events-ui.h"
++#include "qom/object.h"
++#include "crypto/tlscreds.h"
++#include "crypto/tlscredsx509.h"
++#include "crypto/secret_common.h"
++#include "monitor/monitor.h"
++#include "monitor/hmp.h"
++#include "monitor/qmp-helpers.h"
++#include "system/system.h"
++#include "ui/qemu-rdp.h"
++#include "rdp.h"
++#include "trace.h"
++
++typedef struct RdpState {
++    VdsServer *server;
++    QEMUBH *dispatch_bh;
++    Notifier exit_notifier;
++    char *username;
++    char *host;
++    int port;
++    const char *auth;
++    uint32_t max_fps;
++    uint64_t active_client_sid;
++    char *debug_dir;
++    uint32_t debug_flags;
++} RdpState;
++
++static RdpState rdp;
++
++static QemuOptsList qemu_rdp_opts = {
++    .name = "rdp",
++    .head = QTAILQ_HEAD_INITIALIZER(qemu_rdp_opts.head),
++    .merge_lists = true,
++    .desc = {
++        { .name = "addr", .type = QEMU_OPT_STRING },
++        { .name = "port", .type = QEMU_OPT_NUMBER },
++        { .name = "tls-creds", .type = QEMU_OPT_STRING },
++        { .name = "auth", .type = QEMU_OPT_STRING },
++        { .name = "username", .type = QEMU_OPT_STRING },
++        { .name = "password-secret", .type = QEMU_OPT_STRING },
++        { .name = "codecs", .type = QEMU_OPT_STRING },
++        { .name = "max-fps", .type = QEMU_OPT_NUMBER },
++        { .name = "bitrate", .type = QEMU_OPT_NUMBER },
++        { .name = "encoder-threads", .type = QEMU_OPT_NUMBER },
++        { .name = "encoder", .type = QEMU_OPT_STRING },
++        { .name = "rendernode", .type = QEMU_OPT_STRING },
++        { .name = "qp-max", .type = QEMU_OPT_NUMBER },
++        { .name = "refine-qp", .type = QEMU_OPT_NUMBER },
++        { .name = "refine-delay", .type = QEMU_OPT_NUMBER },
++        { .name = "egfx-mixed", .type = QEMU_OPT_BOOL },
++        { .name = "audio", .type = QEMU_OPT_BOOL },
++        { .name = "clipboard", .type = QEMU_OPT_BOOL },
++        { .name = "resize-on-connect", .type = QEMU_OPT_BOOL },
++        { .name = "sas-hotkey", .type = QEMU_OPT_STRING },
++        { .name = "debug-dir", .type = QEMU_OPT_STRING },
++        { .name = "debug-input", .type = QEMU_OPT_BOOL },
++        { .name = "debug-video", .type = QEMU_OPT_BOOL },
++        { .name = "log", .type = QEMU_OPT_STRING },
++        { .name = "log-format", .type = QEMU_OPT_STRING },
++        { /* end of list */ }
++    },
++};
++
++static void rdp_register_config(void)
++{
++    qemu_add_opts(&qemu_rdp_opts);
++}
++opts_init(rdp_register_config);
++
++VdsServer *qemu_rdp_server(void)
++{
++    return rdp.server;
++}
++
++uint32_t qemu_rdp_max_fps(void)
++{
++    return rdp.max_fps;
++}
++
++bool qemu_rdp_has_client(void)
++{
++    return rdp.active_client_sid != 0;
++}
++
++/* Takes ownership of a libvds error string. */
++static void rdp_error_take(Error **errp, char *vds_err, const char *what)
++{
++    error_setg(errp, "rdp: %s: %s", what, vds_err ? vds_err : "unknown error");
++    vds_free_string(vds_err);
++}
++
++/* Callbacks, see VdsCallbacks in vds.h. */
++
++static void rdp_cb_wakeup(void *opaque)
++{
++    /* Any thread: only schedule the bottom half. */
++    qemu_bh_schedule(rdp.dispatch_bh);
++}
++
++static void rdp_dispatch_bh(void *opaque)
++{
++    if (rdp.server) {
++        vds_server_dispatch(rdp.server);
++    }
++}
++
++static void rdp_cb_key(void *opaque, uint8_t scancode, bool extended,
++                       bool down)
++{
++    rdp_input_key(scancode, extended, down);
++}
++
++static void rdp_cb_unicode(void *opaque, uint16_t code, bool down)
++{
++    /* No guest keymap: unicode key events cannot be injected. */
++    trace_rdp_input_unicode_ignored(down);
++}
++
++static void rdp_cb_lock_sync(void *opaque, bool scroll, bool num, bool caps)
++{
++    rdp_input_lock_sync(scroll, num, caps);
++}
++
++static void rdp_cb_pointer_abs(void *opaque, uint32_t head, uint32_t x,
++                               uint32_t y, uint32_t width, uint32_t height)
++{
++    rdp_input_pointer_abs(head, x, y, width, height);
++}
++
++static void rdp_cb_pointer_rel(void *opaque, int32_t dx, int32_t dy)
++{
++    rdp_input_pointer_rel(dx, dy);
++}
++
++static void rdp_cb_button(void *opaque, uint32_t button, bool down)
++{
++    rdp_input_button(button, down);
++}
++
++static void rdp_cb_wheel(void *opaque, int32_t dx, int32_t dy)
++{
++    rdp_input_wheel(dx, dy);
++}
++
++static void rdp_cb_layout(void *opaque, const VdsMonitor *monitors,
++                          uint32_t count)
++{
++    rdp_display_layout(monitors, count);
++}
++
++static void rdp_cb_clipboard_grab(void *opaque, const uint32_t *types,
++                                  uint32_t count)
++{
++    rdp_clipboard_client_grab(types, count);
++}
++
++static void rdp_cb_clipboard_release(void *opaque)
++{
++    rdp_clipboard_client_release();
++}
++
++static void rdp_cb_clipboard_request(void *opaque, uint32_t type)
++{
++    rdp_clipboard_client_request(type);
++}
++
++static void rdp_cb_clipboard_data(void *opaque, uint32_t type,
++                                  const uint8_t *data, size_t len)
++{
++    rdp_clipboard_client_data(type, data, len);
++}
++
++static void rdp_cb_client_state(void *opaque, const VdsClientInfo *info,
++                                uint32_t state, const char *reason)
++{
++    RdpEventClient client = {
++        .sid = info->sid,
++        .peer = (char *)info->peer,
++        .user = info->user[0] ? (char *)info->user : NULL,
++    };
++
++    trace_rdp_client_state(info->sid, info->peer, state);
++    switch (state) {
++    case VDS_CLIENT_CONNECTED:
++        qapi_event_send_rdp_connected(&client);
++        break;
++    case VDS_CLIENT_INITIALIZED:
++        rdp.active_client_sid = info->sid;
++        qapi_event_send_rdp_initialized(&client);
++        break;
++    case VDS_CLIENT_DISCONNECTED:
++        if (rdp.active_client_sid == info->sid) {
++            rdp.active_client_sid = 0;
++        }
++        qapi_event_send_rdp_disconnected(&client, reason ? reason : "");
++        break;
++    default:
++        break;
++    }
++}
++
++static const VdsCallbacks rdp_callbacks = {
++    .wakeup = rdp_cb_wakeup,
++    .key = rdp_cb_key,
++    .unicode = rdp_cb_unicode,
++    .lock_sync = rdp_cb_lock_sync,
++    .pointer_abs = rdp_cb_pointer_abs,
++    .pointer_rel = rdp_cb_pointer_rel,
++    .button = rdp_cb_button,
++    .wheel = rdp_cb_wheel,
++    .layout = rdp_cb_layout,
++    .clipboard_grab = rdp_cb_clipboard_grab,
++    .clipboard_release = rdp_cb_clipboard_release,
++    .clipboard_request = rdp_cb_clipboard_request,
++    .clipboard_data = rdp_cb_clipboard_data,
++    .client_state = rdp_cb_client_state,
++};
++
++/* Option parsing */
++
++static bool rdp_parse_codecs(const char *list, uint32_t *bits, Error **errp)
++{
++    g_auto(GStrv) names = g_strsplit(list, ":", -1);
++    int i;
++
++    *bits = 0;
++    for (i = 0; names[i]; i++) {
++        if (!strcmp(names[i], "avc420")) {
++            *bits |= VDS_CODEC_AVC420;
++        } else if (!strcmp(names[i], "remotefx")) {
++            *bits |= VDS_CODEC_REMOTEFX;
++        } else if (!strcmp(names[i], "bitmap")) {
++            *bits |= VDS_CODEC_BITMAP;
++        } else if (names[i][0]) {
++            error_setg(errp, "rdp: unknown codec '%s'", names[i]);
++            return false;
++        }
++    }
++    if (!*bits) {
++        error_setg(errp, "rdp: no codec allowed");
++        return false;
++    }
++    return true;
++}
++
++static bool rdp_parse_auth(const char *auth, uint32_t *mode, Error **errp)
++{
++    if (!auth || !strcmp(auth, "nla")) {
++        *mode = VDS_AUTH_NLA;
++        rdp.auth = "nla";
++    } else if (!strcmp(auth, "tls")) {
++        *mode = VDS_AUTH_TLS;
++        rdp.auth = "tls";
++    } else if (!strcmp(auth, "none")) {
++        *mode = VDS_AUTH_NONE;
++        rdp.auth = "none";
++    } else {
++        error_setg(errp, "rdp: auth must be 'none', 'tls' or 'nla'");
++        return false;
++    }
++    return true;
++}
++
++/*
++ * Resolves sas-hotkey: what the client's Ctrl+Alt+End turns into for the
++ * guest. Clients cannot send Ctrl+Alt+Del themselves, so they send
++ * Ctrl+Alt+End and expect the server to inject the secure attention
++ * sequence -- mstsc's behaviour, and the default here.
++ */
++static bool rdp_parse_sas(const char *sas, uint32_t *mode, Error **errp)
++{
++    if (!sas || !strcmp(sas, "ctrl-alt-end")) {
++        *mode = VDS_SAS_CTRL_ALT_END;
++    } else if (!strcmp(sas, "off")) {
++        *mode = VDS_SAS_OFF;
++    } else {
++        error_setg(errp, "rdp: sas-hotkey must be 'ctrl-alt-end' or 'off'");
++        return false;
++    }
++    return true;
++}
++
++/*
++ * Resolves debug-dir: "on" (and the usual boolean spellings) means the
++ * platform's temporary directory, %TEMP%\vds or /tmp/vds.
++ */
++static char *rdp_debug_dir(const char *value)
++{
++    if (!value) {
++        return NULL;
++    }
++    if (!strcmp(value, "on") || !strcmp(value, "yes") ||
++        !strcmp(value, "true")) {
++        return g_build_filename(g_get_tmp_dir(), "vds", NULL);
++    }
++    return g_strdup(value);
++}
++
++static uint32_t rdp_debug_flags(QemuOpts *opts)
++{
++    uint32_t flags = 0;
++
++    if (qemu_opt_get_bool(opts, "debug-input", false)) {
++        flags |= VDS_DEBUG_INPUT;
++    }
++    if (qemu_opt_get_bool(opts, "debug-video", false)) {
++        flags |= VDS_DEBUG_VIDEO;
++    }
++    return flags;
++}
++
++static bool rdp_load_tls_creds(const char *id, Error **errp)
++{
++    Object *obj;
++    QCryptoTLSCreds *creds;
++    g_autofree char *dir = NULL;
++    g_autofree char *cert_path = NULL;
++    g_autofree char *key_path = NULL;
++    g_autofree char *cert = NULL;
++    g_autofree char *key = NULL;
++    g_autoptr(GError) gerr = NULL;
++    char *vds_err = NULL;
++
++    obj = object_resolve_path_component(object_get_objects_root(), id);
++    if (!obj || !object_dynamic_cast(obj, TYPE_QCRYPTO_TLS_CREDS_X509)) {
++        error_setg(errp, "rdp: no tls-creds-x509 object with id '%s'", id);
++        return false;
++    }
++    creds = QCRYPTO_TLS_CREDS(obj);
++    if (!qcrypto_tls_creds_check_endpoint(creds,
++                                          QCRYPTO_TLS_CREDS_ENDPOINT_SERVER,
++                                          errp)) {
++        return false;
++    }
++    dir = object_property_get_str(obj, "dir", errp);
++    if (!dir) {
++        return false;
++    }
++    cert_path = g_build_filename(dir, QCRYPTO_TLS_CREDS_X509_SERVER_CERT, NULL);
++    key_path = g_build_filename(dir, QCRYPTO_TLS_CREDS_X509_SERVER_KEY, NULL);
++    if (!g_file_get_contents(cert_path, &cert, NULL, &gerr) ||
++        !g_file_get_contents(key_path, &key, NULL, &gerr)) {
++        error_setg(errp, "rdp: cannot read TLS credentials: %s",
++                   gerr->message);
++        return false;
++    }
++    if (vds_server_set_tls(rdp.server, cert, key, &vds_err) != VDS_OK) {
++        rdp_error_take(errp, vds_err, "invalid TLS credentials");
++        return false;
++    }
++    return true;
++}
++
++static void rdp_exit_notify(Notifier *n, void *data)
++{
++    /*
++     * Exit notifiers are run from an atexit() handler.  glibc destroys
++     * thread-local storage before running atexit handlers, and libvds is
++     * Rust: waking a tokio task or emitting a tracing event from here
++     * panics with "cannot access a Thread Local Storage value during or
++     * after destruction", which aborts the process.
++     *
++     * The process is exiting either way, so do not call back into libvds.
++     * Leaking the server and the display heads is harmless: the OS reclaims
++     * them (and stops the RDP thread) at exit.
++     */
++    rdp.server = NULL;
++}
++
++void qemu_rdp_init(Error **errp)
++{
++    ERRP_GUARD();
++    QemuOpts *opts = qemu_opts_find(qemu_find_opts("rdp"), NULL);
++    VdsConfig cfg;
++    VdsLogConfig log_cfg = { .struct_size = sizeof(VdsLogConfig) };
++    const char *str;
++    char *vds_err = NULL;
++    uint32_t version = vds_abi_version();
++    uint64_t port;
++
++    if (!opts) {
++        return;
++    }
++    /* Signed comparison: VDS_ABI_MINOR may be 0. */
++    if ((version >> 16) != VDS_ABI_MAJOR ||
++        (int)(version & 0xffff) < (int)VDS_ABI_MINOR) {
++        error_setg(errp, "rdp: libvds ABI %u.%u is incompatible with %u.%u",
++                   version >> 16, version & 0xffff,
++                   VDS_ABI_MAJOR, VDS_ABI_MINOR);
++        return;
++    }
++
++    log_cfg.filter = qemu_opt_get(opts, "log");
++    str = qemu_opt_get(opts, "log-format");
++    if (!str) {
++        log_cfg.format = VDS_LOG_FORMAT_DEFAULT;
++    } else if (!strcmp(str, "text")) {
++        log_cfg.format = VDS_LOG_FORMAT_TEXT;
++    } else if (!strcmp(str, "json")) {
++        log_cfg.format = VDS_LOG_FORMAT_JSON;
++    } else {
++        error_setg(errp, "rdp: log-format must be 'text' or 'json'");
++        return;
++    }
++    if (vds_log_init(&log_cfg, &vds_err) != VDS_OK) {
++        rdp_error_take(errp, vds_err, "cannot initialize logging");
++        return;
++    }
++
++    vds_config_init(&cfg);
++    if (!rdp_parse_auth(qemu_opt_get(opts, "auth"), &cfg.auth, errp)) {
++        return;
++    }
++    str = qemu_opt_get(opts, "codecs");
++    if (str && !rdp_parse_codecs(str, &cfg.codecs, errp)) {
++        return;
++    }
++    cfg.max_fps = qemu_opt_get_number(opts, "max-fps", cfg.max_fps);
++    cfg.bitrate_kbps = qemu_opt_get_number(opts, "bitrate", 0);
++    cfg.encoder_threads = qemu_opt_get_number(opts, "encoder-threads", 0);
++    cfg.encoder = qemu_opt_get(opts, "encoder");
++    cfg.render_node = qemu_opt_get(opts, "rendernode");
++    cfg.qp_max = qemu_opt_get_number(opts, "qp-max", cfg.qp_max);
++    cfg.refine_qp = qemu_opt_get_number(opts, "refine-qp", cfg.refine_qp);
++    cfg.refine_delay_ms = qemu_opt_get_number(opts, "refine-delay",
++                                              cfg.refine_delay_ms);
++    cfg.egfx_mixed = qemu_opt_get_bool(opts, "egfx-mixed", cfg.egfx_mixed);
++    cfg.audio = qemu_opt_get_bool(opts, "audio", true);
++    cfg.clipboard = qemu_opt_get_bool(opts, "clipboard", true);
++    cfg.resize_on_connect = qemu_opt_get_bool(opts, "resize-on-connect",
++                                              true);
++    if (!rdp_parse_sas(qemu_opt_get(opts, "sas-hotkey"), &cfg.sas_hotkey,
++                       errp)) {
++        return;
++    }
++    cfg.vm_name = qemu_name;
++    rdp.debug_dir = rdp_debug_dir(qemu_opt_get(opts, "debug-dir"));
++    cfg.debug_dir = rdp.debug_dir;
++    cfg.debug_flags = rdp_debug_flags(opts);
++    rdp.debug_flags = cfg.debug_flags;
++    rdp.max_fps = cfg.max_fps;
++
++    rdp.dispatch_bh = qemu_bh_new(rdp_dispatch_bh, NULL);
++    rdp.server = vds_server_new(&cfg, &rdp_callbacks, NULL, &vds_err);
++    if (!rdp.server) {
++        rdp_error_take(errp, vds_err, "invalid configuration");
++        return;
++    }
++
++    str = qemu_opt_get(opts, "tls-creds");
++    if (str && !rdp_load_tls_creds(str, errp)) {
++        return;
++    }
++
++    rdp.username = g_strdup(qemu_opt_get(opts, "username") ?: "");
++    str = qemu_opt_get(opts, "password-secret");
++    if (str) {
++        g_autofree char *password = qcrypto_secret_lookup_as_utf8(str, errp);
++
++        if (!password) {
++            return;
++        }
++        if (vds_set_password(rdp.server, rdp.username, password, NULL,
++                             VDS_CONNECTED_KEEP, false, &vds_err) != VDS_OK) {
++            rdp_error_take(errp, vds_err, "cannot set the password");
++            return;
++        }
++    } else if (cfg.auth != VDS_AUTH_NONE) {
++        warn_report("rdp: no password-secret, clients are refused until "
++                    "set_password is used");
++    }
++
++    rdp_input_init();
++    rdp_display_init(rdp.server, errp);
++    if (*errp) {
++        return;
++    }
++    if (cfg.clipboard) {
++        rdp_clipboard_init(rdp.server);
++    }
++
++    rdp.exit_notifier.notify = rdp_exit_notify;
++    qemu_add_exit_notifier(&rdp.exit_notifier);
++
++    port = qemu_opt_get_number(opts, "port", 0);
++    if (qemu_opt_get(opts, "port")) {
++        uint16_t bound = 0;
++
++        if (port > 65535) {
++            error_setg(errp, "rdp: invalid port %" PRIu64, port);
++            return;
++        }
++        rdp.host = g_strdup(qemu_opt_get(opts, "addr") ?: "127.0.0.1");
++        if (vds_server_listen(rdp.server, rdp.host, port, &bound,
++                              &vds_err) != VDS_OK) {
++            rdp_error_take(errp, vds_err, "cannot listen");
++            return;
++        }
++        rdp.port = bound;
++        trace_rdp_listen(rdp.host, bound);
++    }
++}
++
++void qemu_rdp_set_password(const char *password, SetPasswordAction connected,
++                           SetPasswordOptionsRdp *opts, Error **errp)
++{
++    char *vds_err = NULL;
++    uint32_t action;
++
++    if (!rdp.server) {
++        error_setg(errp, "rdp: RDP is not enabled");
++        return;
++    }
++    switch (connected) {
++    case SET_PASSWORD_ACTION_FAIL:
++        action = VDS_CONNECTED_FAIL;
++        break;
++    case SET_PASSWORD_ACTION_DISCONNECT:
++        action = VDS_CONNECTED_DISCONNECT;
++        break;
++    default:
++        action = VDS_CONNECTED_KEEP;
++        break;
++    }
++    if (vds_set_password(rdp.server,
++                         opts->username ? opts->username : rdp.username,
++                         password, opts->domain, action,
++                         opts->has_one_time && opts->one_time,
++                         &vds_err) != VDS_OK) {
++        rdp_error_take(errp, vds_err, "could not set password");
++    }
++}
++
++void qmp_rdp_set_debug(bool has_input, bool input, bool has_video, bool video,
++                       bool has_pdu, bool pdu, Error **errp)
++{
++    uint32_t flags;
++    char *vds_err = NULL;
++
++    if (!rdp.server) {
++        error_setg(errp, "rdp: RDP is not enabled");
++        return;
++    }
++    if (!rdp.debug_dir) {
++        error_setg(errp, "rdp: no debug directory, start QEMU with "
++                   "-rdp debug-dir=DIR");
++        return;
++    }
++    flags = rdp.debug_flags;
++    if (has_input) {
++        flags = input ? flags | VDS_DEBUG_INPUT : flags & ~VDS_DEBUG_INPUT;
++    }
++    if (has_video) {
++        flags = video ? flags | VDS_DEBUG_VIDEO : flags & ~VDS_DEBUG_VIDEO;
++    }
++    if (has_pdu) {
++        flags = pdu ? flags | VDS_DEBUG_PDU : flags & ~VDS_DEBUG_PDU;
++    }
++    if (vds_server_set_debug(rdp.server, flags, &vds_err) != VDS_OK) {
++        rdp_error_take(errp, vds_err, "cannot change the debug flags");
++        return;
++    }
++    rdp.debug_flags = flags;
++}
++
++void qemu_rdp_set_password_expiry(time_t when, Error **errp)
++{
++    int64_t at = when == TIME_MAX ? VDS_EXPIRE_NEVER : (int64_t)when;
++
++    if (!rdp.server) {
++        error_setg(errp, "rdp: RDP is not enabled");
++        return;
++    }
++    if (vds_set_password_expiry(rdp.server, at) != VDS_OK) {
++        error_setg(errp, "rdp: could not set password expire time");
++    }
++}
++
++static RdpClientInfoList *rdp_client_list(void)
++{
++    RdpClientInfoList *list = NULL;
++    VdsClientInfo info[16];
++    uint32_t n, i;
++
++    n = vds_server_clients(rdp.server, info, ARRAY_SIZE(info));
++    n = MIN(n, ARRAY_SIZE(info));
++    for (i = 0; i < n; i++) {
++        RdpClientInfo *c = g_new0(RdpClientInfo, 1);
++
++        c->sid = info[i].sid;
++        c->peer = g_strdup(info[i].peer);
++        c->user = info[i].user[0] ? g_strdup(info[i].user) : NULL;
++        c->codec = info[i].codec[0] ? g_strdup(info[i].codec) : NULL;
++        c->connected_at = info[i].connected_at;
++        c->fps = info[i].fps;
++        c->bitrate_kbps = info[i].bitrate_kbps;
++        c->has_rtt_ms = info[i].rtt_ms != VDS_RTT_UNKNOWN;
++        c->rtt_ms = info[i].rtt_ms;
++        QAPI_LIST_PREPEND(list, c);
++    }
++    return list;
++}
++
++RdpInfo *qmp_query_rdp(Error **errp)
++{
++    RdpInfo *info = g_new0(RdpInfo, 1);
++
++    info->enabled = rdp.server != NULL;
++    if (!rdp.server) {
++        return info;
++    }
++    if (rdp.host) {
++        info->host = g_strdup(rdp.host);
++        info->has_port = true;
++        info->port = rdp.port;
++    }
++    info->auth = g_strdup(rdp.auth);
++    info->clients = rdp_client_list();
++    if (rdp.debug_dir) {
++        /* A string member has no has_ companion: NULL means "absent". */
++        info->debug_dir = g_strdup(rdp.debug_dir);
++        info->has_debug_input = true;
++        info->debug_input = (rdp.debug_flags & VDS_DEBUG_INPUT) != 0;
++        info->has_debug_video = true;
++        info->debug_video = (rdp.debug_flags & VDS_DEBUG_VIDEO) != 0;
++    }
++    return info;
++}
++
++void hmp_info_rdp(Monitor *mon, const QDict *qdict)
++{
++    g_autoptr(RdpInfo) info = qmp_query_rdp(NULL);
++    RdpClientInfoList *c;
++
++    if (!info->enabled) {
++        monitor_printf(mon, "Server: disabled\n");
++        return;
++    }
++    if (info->host) {
++        monitor_printf(mon, "Server: %s:%" PRId64 " (auth %s)\n",
++                       info->host, info->port, info->auth);
++    } else {
++        monitor_printf(mon, "Server: not listening (auth %s)\n", info->auth);
++    }
++    if (rdp.debug_dir) {
++        monitor_printf(mon, "Debug: %s (input=%s video=%s)\n", rdp.debug_dir,
++                       rdp.debug_flags & VDS_DEBUG_INPUT ? "on" : "off",
++                       rdp.debug_flags & VDS_DEBUG_VIDEO ? "on" : "off");
++    }
++    if (!info->clients) {
++        monitor_printf(mon, "Clients: none\n");
++    }
++    for (c = info->clients; c; c = c->next) {
++        monitor_printf(mon, "Client %" PRId64 ": %s user=%s codec=%s "
++                       "fps=%" PRId64 " bitrate=%" PRId64 "kbit/s",
++                       c->value->sid, c->value->peer,
++                       c->value->user ?: "-", c->value->codec ?: "-",
++                       c->value->fps, c->value->bitrate_kbps);
++        if (c->value->has_rtt_ms) {
++            monitor_printf(mon, " rtt=%" PRId64 "ms", c->value->rtt_ms);
++        }
++        monitor_printf(mon, "\n");
++    }
++}
++
++bool qmp_add_client_rdp(int fd, bool has_skipauth, bool skipauth,
++                        bool has_tls, bool tls, Error **errp)
++{
++    intptr_t sock;
++
++    if (!rdp.server) {
++        error_setg(errp, "rdp: RDP is not enabled");
++        return false;
++    }
++#ifdef _WIN32
++    sock = (intptr_t)_get_osfhandle(fd);
++#else
++    sock = fd;
++#endif
++    if (vds_server_add_client(rdp.server, sock,
++                              has_skipauth && skipauth) != VDS_OK) {
++        error_setg(errp, "rdp: failed to add client");
++        return false;
++    }
++#ifdef _WIN32
++    /* libvds owns the SOCKET now: release the CRT descriptor only. */
++    qemu_close_socket_osfhandle(fd);
++#endif
++    return true;
++}
+diff --git a/ui/rdp-display.c b/ui/rdp-display.c
+new file mode 100644
+index 0000000..cfa8839
+--- /dev/null
++++ b/ui/rdp-display.c
+@@ -0,0 +1,369 @@
++/*
++ * QEMU RDP server (libvds frontend): display
++ *
++ * One 2D DisplayChangeListener per graphic console. Damage reported by
++ * dpy_gfx_update is accumulated and handed to libvds in dpy_refresh.
++ *
++ * A surface in shareable memory (virtio-gpu resources) is attached to libvds,
++ * which reads it in place from its encoder thread: the main thread only
++ * reports damage. Any other surface is copied by vds_head_submit, which
++ * returns once the damaged rectangles are copied (decision D-004: libvds
++ * never touches the GPU). GL consoles (virgl, vfio display) are supported
++ * through "-display egl-headless", which reads GL frames back into the 2D
++ * surface.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/main-loop.h"
++#include "qemu/thread.h"
++#include "qemu/timer.h"
++#include "qapi/error.h"
++#include "ui/console.h"
++#include "ui/qemu-pixman.h"
++#include "ui/surface.h"
++#include "rdp.h"
++#include "trace.h"
++
++/* Damage rectangles kept before collapsing to a bounding box. */
++#define RDP_MAX_RECTS 32
++/* Refresh interval while no client consumes frames. */
++#define RDP_IDLE_INTERVAL_MS 100
++
++typedef struct RdpDisplay {
++    DisplayChangeListener dcl;
++    VdsServer *server;
++    VdsHead *head;
++    uint32_t index;
++    DisplaySurface *surface;
++    /* x8r8g8b8 copy, only when the surface uses another format. */
++    pixman_image_t *shadow;
++    /* libvds reads the surface in place (vds_head_attach_shared). */
++    bool shared;
++    VdsRect rects[RDP_MAX_RECTS];
++    uint32_t nrects;
++} RdpDisplay;
++
++static GPtrArray *rdp_displays;
++
++/*
++ * Surface images libvds gave back. libvds releases them from its own threads,
++ * but pixman reference counts are not atomic: the unref happens here, in a
++ * bottom half on the main thread.
++ */
++static struct {
++    QemuMutex lock;
++    GSList *images;
++    QEMUBH *bh;
++} rdp_release;
++
++static void rdp_release_bh(void *opaque)
++{
++    GSList *images, *l;
++
++    qemu_mutex_lock(&rdp_release.lock);
++    images = rdp_release.images;
++    rdp_release.images = NULL;
++    qemu_mutex_unlock(&rdp_release.lock);
++    for (l = images; l; l = l->next) {
++        pixman_image_unref(l->data);
++    }
++    g_slist_free(images);
++}
++
++/* VdsReleaseFn: any thread. */
++static void rdp_release_image(void *opaque)
++{
++    qemu_mutex_lock(&rdp_release.lock);
++    rdp_release.images = g_slist_prepend(rdp_release.images, opaque);
++    qemu_mutex_unlock(&rdp_release.lock);
++    qemu_bh_schedule(rdp_release.bh);
++}
++
++static bool rdp_rect_contains(const VdsRect *r, int x, int y, int w, int h)
++{
++    return x >= (int)r->x && y >= (int)r->y &&
++           x + w <= (int)(r->x + r->w) && y + h <= (int)(r->y + r->h);
++}
++
++static void rdp_damage_add(RdpDisplay *rd, int x, int y, int w, int h)
++{
++    VdsRect *r;
++    uint32_t i;
++    int x1, y1;
++
++    if (w <= 0 || h <= 0) {
++        return;
++    }
++    /*
++     * A surface switch damages everything and the flush that follows it
++     * reports the same area again: do not hand libvds the same pixels twice.
++     */
++    for (i = 0; i < rd->nrects; i++) {
++        if (rdp_rect_contains(&rd->rects[i], x, y, w, h)) {
++            return;
++        }
++    }
++    if (rd->nrects == RDP_MAX_RECTS) {
++        /* Collapse everything into the first rectangle. */
++        r = &rd->rects[0];
++        x1 = MAX(r->x + r->w, (uint32_t)(x + w));
++        y1 = MAX(r->y + r->h, (uint32_t)(y + h));
++        for (i = 1; i < rd->nrects; i++) {
++            x1 = MAX((uint32_t)x1, rd->rects[i].x + rd->rects[i].w);
++            y1 = MAX((uint32_t)y1, rd->rects[i].y + rd->rects[i].h);
++            r->x = MIN(r->x, rd->rects[i].x);
++            r->y = MIN(r->y, rd->rects[i].y);
++        }
++        r->x = MIN(r->x, (uint32_t)x);
++        r->y = MIN(r->y, (uint32_t)y);
++        r->w = x1 - r->x;
++        r->h = y1 - r->y;
++        rd->nrects = 1;
++        return;
++    }
++    rd->rects[rd->nrects++] = (VdsRect) { x, y, w, h };
++}
++
++static void rdp_damage_full(RdpDisplay *rd)
++{
++    rd->nrects = 0;
++    if (rd->surface) {
++        rdp_damage_add(rd, 0, 0, surface_width(rd->surface),
++                       surface_height(rd->surface));
++    }
++}
++
++static bool rdp_format_native(pixman_format_code_t format)
++{
++    return format == PIXMAN_x8r8g8b8 || format == PIXMAN_a8r8g8b8;
++}
++
++static void rdp_gfx_update(DisplayChangeListener *dcl,
++                           int x, int y, int w, int h)
++{
++    RdpDisplay *rd = container_of(dcl, RdpDisplay, dcl);
++
++    rdp_damage_add(rd, x, y, w, h);
++}
++
++static void rdp_gfx_switch(DisplayChangeListener *dcl,
++                           DisplaySurface *new_surface)
++{
++    RdpDisplay *rd = container_of(dcl, RdpDisplay, dcl);
++    int w, h;
++
++    rd->surface = new_surface;
++    qemu_pixman_image_unref(rd->shadow);
++    rd->shadow = NULL;
++    if (!new_surface) {
++        return;
++    }
++    w = surface_width(new_surface);
++    h = surface_height(new_surface);
++    if (!rdp_format_native(surface_format(new_surface))) {
++        rd->shadow = pixman_image_create_bits(PIXMAN_x8r8g8b8, w, h, NULL, 0);
++    }
++    if (vds_head_resize(rd->head, w, h) != VDS_OK) {
++        warn_report("rdp: cannot use a %dx%d display", w, h);
++    }
++    rd->shared = false;
++    if (!rd->shadow && new_surface->share_handle != SHAREABLE_NONE) {
++        /* The reference keeps the memory mapped until libvds lets it go. */
++        pixman_image_t *image = pixman_image_ref(new_surface->image);
++        const uint8_t *data = (const uint8_t *)pixman_image_get_data(image);
++        int stride = pixman_image_get_stride(image);
++
++        if (vds_head_attach_shared(rd->head, data, (size_t)stride * h, stride,
++                                   rdp_release_image, image) == VDS_OK) {
++            rd->shared = true;
++        } else {
++            pixman_image_unref(image);
++        }
++    }
++    trace_rdp_display_switch(rd->index, w, h, surface_format(new_surface),
++                             rd->shared);
++    rdp_damage_full(rd);
++}
++
++static void rdp_refresh(DisplayChangeListener *dcl)
++{
++    RdpDisplay *rd = container_of(dcl, RdpDisplay, dcl);
++    bool wanted = vds_server_wants_frame(rd->server);
++    bool active = qemu_rdp_has_client();
++    uint64_t interval = active ? 1000 / MAX(qemu_rdp_max_fps(), 1)
++                               : RDP_IDLE_INTERVAL_MS;
++    int64_t started = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
++    pixman_image_t *src;
++    uint32_t i;
++
++    trace_rdp_display_refresh(rd->index, active, wanted, interval);
++    update_displaychangelistener(dcl, interval);
++    graphic_hw_update(dcl->con);
++    if (!wanted || !rd->surface || !rd->nrects) {
++        return;
++    }
++
++    if (rd->shared) {
++        /* libvds reads the surface itself, from its encoder thread. */
++        vds_head_damage(rd->head, rd->rects, rd->nrects);
++    } else {
++        src = rd->surface->image;
++        if (rd->shadow) {
++            for (i = 0; i < rd->nrects; i++) {
++                pixman_image_composite(PIXMAN_OP_SRC, src, NULL, rd->shadow,
++                                       rd->rects[i].x, rd->rects[i].y, 0, 0,
++                                       rd->rects[i].x, rd->rects[i].y,
++                                       rd->rects[i].w, rd->rects[i].h);
++            }
++            src = rd->shadow;
++        }
++        vds_head_submit(rd->head, (const uint8_t *)pixman_image_get_data(src),
++                        (size_t)pixman_image_get_stride(src) *
++                        pixman_image_get_height(src),
++                        pixman_image_get_stride(src), rd->rects, rd->nrects);
++    }
++    /*
++     * T-V2: how long this refresh cost QEMU, everything before libvds sees the
++     * damage: the dirty-page scan in graphic_hw_update, the shadow copy and the
++     * submit (or only the damage report for a shared surface). libvds times
++     * the rest of the path (docs/spec/logging.md 5).
++     */
++    trace_rdp_display_submit(rd->index, rd->nrects,
++                             qemu_clock_get_us(QEMU_CLOCK_REALTIME) - started);
++    rd->nrects = 0;
++}
++
++static bool rdp_check_format(DisplayChangeListener *dcl,
++                             pixman_format_code_t format)
++{
++    /* Other formats work through the shadow image, but cost a copy. */
++    return rdp_format_native(format);
++}
++
++static void rdp_mouse_set(DisplayChangeListener *dcl, int x, int y, bool on)
++{
++    RdpDisplay *rd = container_of(dcl, RdpDisplay, dcl);
++
++    vds_cursor_set_visible(rd->server, on);
++}
++
++static void rdp_cursor_define(DisplayChangeListener *dcl, QEMUCursor *c)
++{
++    RdpDisplay *rd = container_of(dcl, RdpDisplay, dcl);
++
++    if (vds_cursor_define(rd->server, c->width, c->height,
++                          MAX(c->hot_x, 0), MAX(c->hot_y, 0),
++                          c->data) != VDS_OK) {
++        trace_rdp_display_cursor_rejected(c->width, c->height);
++    }
++}
++
++static const DisplayChangeListenerOps rdp_dcl_ops = {
++    .dpy_name = "rdp",
++    .dpy_refresh = rdp_refresh,
++    .dpy_gfx_update = rdp_gfx_update,
++    .dpy_gfx_switch = rdp_gfx_switch,
++    .dpy_gfx_check_format = rdp_check_format,
++    .dpy_mouse_set = rdp_mouse_set,
++    .dpy_cursor_define = rdp_cursor_define,
++};
++
++void rdp_display_init(VdsServer *server, Error **errp)
++{
++    QemuConsole *con;
++    uint32_t i;
++
++    qemu_mutex_init(&rdp_release.lock);
++    rdp_release.bh = qemu_bh_new(rdp_release_bh, NULL);
++    rdp_displays = g_ptr_array_new();
++    for (i = 0; (con = qemu_console_lookup_by_index(i)); i++) {
++        RdpDisplay *rd;
++        char *vds_err = NULL;
++
++        if (!qemu_console_is_graphic(con)) {
++            continue;
++        }
++        rd = g_new0(RdpDisplay, 1);
++        rd->server = server;
++        rd->index = qemu_console_get_index(con);
++        rd->head = vds_head_add(server, rd->index,
++                                qemu_console_get_width(con, 640),
++                                qemu_console_get_height(con, 480), &vds_err);
++        if (!rd->head) {
++            error_setg(errp, "rdp: cannot add display %u: %s", rd->index,
++                       vds_err ? vds_err : "unknown error");
++            vds_free_string(vds_err);
++            g_free(rd);
++            return;
++        }
++        rd->dcl.ops = &rdp_dcl_ops;
++        rd->dcl.con = con;
++        g_ptr_array_add(rdp_displays, rd);
++        register_displaychangelistener(&rd->dcl);
++    }
++    if (!rdp_displays->len) {
++        warn_report("rdp: the machine has no graphic console");
++    }
++}
++
++void rdp_display_fini(void)
++{
++    uint32_t i;
++
++    if (!rdp_displays) {
++        return;
++    }
++    for (i = 0; i < rdp_displays->len; i++) {
++        RdpDisplay *rd = g_ptr_array_index(rdp_displays, i);
++
++        unregister_displaychangelistener(&rd->dcl);
++        vds_head_remove(rd->head);
++        qemu_pixman_image_unref(rd->shadow);
++        g_free(rd);
++    }
++    g_ptr_array_free(rdp_displays, true);
++    rdp_displays = NULL;
++}
++
++QemuConsole *rdp_display_console(uint32_t head)
++{
++    uint32_t i;
++
++    for (i = 0; rdp_displays && i < rdp_displays->len; i++) {
++        RdpDisplay *rd = g_ptr_array_index(rdp_displays, i);
++
++        if (rd->index == head) {
++            return rd->dcl.con;
++        }
++    }
++    return NULL;
++}
++
++void rdp_display_layout(const VdsMonitor *monitors, uint32_t count)
++{
++    uint32_t i;
++
++    /* Monitor i of the client drives graphic console i of the guest. */
++    for (i = 0; rdp_displays && i < count && i < rdp_displays->len; i++) {
++        RdpDisplay *rd = g_ptr_array_index(rdp_displays, i);
++        QemuConsole *con = rd->dcl.con;
++        QemuUIInfo info;
++
++        if (!dpy_ui_info_supported(con)) {
++            trace_rdp_display_layout_unsupported(rd->index);
++            continue;
++        }
++        info = *dpy_get_ui_info(con);
++        info.xoff = monitors[i].left;
++        info.yoff = monitors[i].top;
++        info.width = monitors[i].width;
++        info.height = monitors[i].height;
++        info.width_mm = monitors[i].width_mm;
++        info.height_mm = monitors[i].height_mm;
++        trace_rdp_display_layout(rd->index, info.width, info.height);
++        dpy_set_ui_info(con, &info, false);
++    }
++}
+diff --git a/ui/rdp-input.c b/ui/rdp-input.c
+new file mode 100644
+index 0000000..0bc2805
+--- /dev/null
++++ b/ui/rdp-input.c
+@@ -0,0 +1,134 @@
++/*
++ * QEMU RDP server (libvds frontend): keyboard and mouse
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "ui/console.h"
++#include "ui/input.h"
++#include "rdp.h"
++#include "trace.h"
++
++/* XT scancodes of the lock keys */
++#define RDP_SC_CAPS_LOCK   0x3a
++#define RDP_SC_NUM_LOCK    0x45
++#define RDP_SC_SCROLL_LOCK 0x46
++
++/* Wheel notches injected for one client event at most. */
++#define RDP_WHEEL_MAX_CLICKS 16
++
++static struct {
++    int ledstate;
++    int last_x;
++    int last_y;
++    bool have_last;
++} rdp_input;
++
++static void rdp_led_event(void *opaque, int ledstate)
++{
++    rdp_input.ledstate = ledstate;
++}
++
++void rdp_input_init(void)
++{
++    qemu_add_led_event_handler(rdp_led_event, NULL);
++}
++
++void rdp_input_key(uint8_t scancode, bool extended, bool down)
++{
++    /* QEMU numeric keycodes: E0-prefixed keys have bit 7 set. */
++    int qnum = (scancode & 0x7f) | (extended ? 0x80 : 0);
++
++    qemu_input_event_send_key_number(NULL, qnum, down);
++}
++
++static void rdp_toggle(int scancode)
++{
++    qemu_input_event_send_key_number(NULL, scancode, true);
++    qemu_input_event_send_key_number(NULL, scancode, false);
++}
++
++void rdp_input_lock_sync(bool scroll, bool num, bool caps)
++{
++    int leds = rdp_input.ledstate;
++
++    trace_rdp_input_lock_sync(scroll, num, caps, leds);
++    if (caps != !!(leds & QEMU_CAPS_LOCK_LED)) {
++        rdp_toggle(RDP_SC_CAPS_LOCK);
++    }
++    if (num != !!(leds & QEMU_NUM_LOCK_LED)) {
++        rdp_toggle(RDP_SC_NUM_LOCK);
++    }
++    if (scroll != !!(leds & QEMU_SCROLL_LOCK_LED)) {
++        rdp_toggle(RDP_SC_SCROLL_LOCK);
++    }
++}
++
++void rdp_input_pointer_abs(uint32_t head, uint32_t x, uint32_t y,
++                           uint32_t width, uint32_t height)
++{
++    QemuConsole *con = rdp_display_console(head);
++
++    if (!con) {
++        return;
++    }
++    if (qemu_input_is_absolute(con)) {
++        qemu_input_queue_abs(con, INPUT_AXIS_X, x, 0, width);
++        qemu_input_queue_abs(con, INPUT_AXIS_Y, y, 0, height);
++    } else if (rdp_input.have_last) {
++        /* Relative-only guest pointer: send deltas. */
++        qemu_input_queue_rel(con, INPUT_AXIS_X, (int)x - rdp_input.last_x);
++        qemu_input_queue_rel(con, INPUT_AXIS_Y, (int)y - rdp_input.last_y);
++    }
++    rdp_input.last_x = x;
++    rdp_input.last_y = y;
++    rdp_input.have_last = true;
++    qemu_input_event_sync();
++}
++
++void rdp_input_pointer_rel(int32_t dx, int32_t dy)
++{
++    qemu_input_queue_rel(NULL, INPUT_AXIS_X, dx);
++    qemu_input_queue_rel(NULL, INPUT_AXIS_Y, dy);
++    qemu_input_event_sync();
++}
++
++void rdp_input_button(uint32_t button, bool down)
++{
++    static const InputButton map[] = {
++        [VDS_BUTTON_LEFT] = INPUT_BUTTON_LEFT,
++        [VDS_BUTTON_RIGHT] = INPUT_BUTTON_RIGHT,
++        [VDS_BUTTON_MIDDLE] = INPUT_BUTTON_MIDDLE,
++        [VDS_BUTTON_SIDE] = INPUT_BUTTON_SIDE,
++        [VDS_BUTTON_EXTRA] = INPUT_BUTTON_EXTRA,
++    };
++
++    if (button >= ARRAY_SIZE(map)) {
++        return;
++    }
++    qemu_input_queue_btn(NULL, map[button], down);
++    qemu_input_event_sync();
++}
++
++static void rdp_wheel_clicks(InputButton btn, int count)
++{
++    while (count-- > 0) {
++        qemu_input_queue_btn(NULL, btn, true);
++        qemu_input_event_sync();
++        qemu_input_queue_btn(NULL, btn, false);
++        qemu_input_event_sync();
++    }
++}
++
++void rdp_input_wheel(int32_t dx, int32_t dy)
++{
++    trace_rdp_input_wheel(dx, dy);
++    /* A bogus client value must not stall the main loop clicking. */
++    dx = MAX(MIN(dx, RDP_WHEEL_MAX_CLICKS), -RDP_WHEEL_MAX_CLICKS);
++    dy = MAX(MIN(dy, RDP_WHEEL_MAX_CLICKS), -RDP_WHEEL_MAX_CLICKS);
++    rdp_wheel_clicks(dy > 0 ? INPUT_BUTTON_WHEEL_UP : INPUT_BUTTON_WHEEL_DOWN,
++                     abs(dy));
++    rdp_wheel_clicks(dx > 0 ? INPUT_BUTTON_WHEEL_RIGHT
++                            : INPUT_BUTTON_WHEEL_LEFT, abs(dx));
++}
+diff --git a/ui/rdp.h b/ui/rdp.h
+new file mode 100644
+index 0000000..870b4c3
+--- /dev/null
++++ b/ui/rdp.h
+@@ -0,0 +1,42 @@
++/*
++ * QEMU RDP server (libvds frontend): internal declarations
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef UI_RDP_H
++#define UI_RDP_H
++
++#include <vds.h>
++
++#include "ui/console.h"
++
++/* rdp-core.c */
++VdsServer *qemu_rdp_server(void);
++uint32_t qemu_rdp_max_fps(void);
++bool qemu_rdp_has_client(void);
++
++/* rdp-display.c */
++void rdp_display_init(VdsServer *server, Error **errp);
++void rdp_display_fini(void);
++QemuConsole *rdp_display_console(uint32_t head);
++void rdp_display_layout(const VdsMonitor *monitors, uint32_t count);
++
++/* rdp-input.c */
++void rdp_input_init(void);
++void rdp_input_key(uint8_t scancode, bool extended, bool down);
++void rdp_input_lock_sync(bool scroll, bool num, bool caps);
++void rdp_input_pointer_abs(uint32_t head, uint32_t x, uint32_t y,
++                           uint32_t width, uint32_t height);
++void rdp_input_pointer_rel(int32_t dx, int32_t dy);
++void rdp_input_button(uint32_t button, bool down);
++void rdp_input_wheel(int32_t dx, int32_t dy);
++
++/* rdp-clipboard.c */
++void rdp_clipboard_init(VdsServer *server);
++void rdp_clipboard_client_grab(const uint32_t *types, uint32_t count);
++void rdp_clipboard_client_release(void);
++void rdp_clipboard_client_request(uint32_t type);
++void rdp_clipboard_client_data(uint32_t type, const uint8_t *data, size_t len);
++
++#endif /* UI_RDP_H */
+diff --git a/ui/trace-events b/ui/trace-events
+index 3da0d5e..a518674 100644
+--- a/ui/trace-events
++++ b/ui/trace-events
+@@ -170,3 +170,25 @@ dbus_can_share_map(bool share) "can_share_map: %d"
+ 
+ # egl-helpers.c
+ egl_init_d3d11_device(void *p) "d3d device: %p"
++
++# rdp-core.c
++rdp_listen(const char *host, int port) "host=%s port=%d"
++rdp_client_state(uint64_t sid, const char *peer, uint32_t state) "sid=%" PRIu64 " peer=%s state=%u"
++rdp_input_unicode_ignored(int down) "down=%d"
++
++# rdp-display.c
++rdp_display_refresh(uint32_t head, bool active, bool wanted, uint64_t interval_ms) "head=%u active=%d wanted=%d interval_ms=%" PRIu64
++rdp_display_switch(uint32_t head, int w, int h, uint32_t format, bool shared) "head=%u w=%d h=%d format=0x%x shared=%d"
++rdp_display_submit(uint32_t head, uint32_t rects, uint64_t us) "head=%u rects=%u us=%" PRIu64
++rdp_display_cursor_rejected(int w, int h) "w=%d h=%d"
++rdp_display_layout(uint32_t head, uint32_t w, uint32_t h) "head=%u w=%u h=%u"
++rdp_display_layout_unsupported(uint32_t head) "head=%u"
++
++# rdp-input.c
++rdp_input_lock_sync(int scroll, int num, int caps, int leds) "scroll=%d num=%d caps=%d leds=0x%x"
++rdp_input_wheel(int32_t dx, int32_t dy) "dx=%d dy=%d"
++
++# rdp-clipboard.c
++rdp_clipboard_to_client(size_t bytes) "bytes=%zu"
++rdp_clipboard_from_client(size_t bytes) "bytes=%zu"
++rdp_clipboard_client_grab(int text) "text=%d"
+diff --git a/ui/ui-qmp-cmds.c b/ui/ui-qmp-cmds.c
+index 74fa6c6..e87a2c3 100644
+--- a/ui/ui-qmp-cmds.c
++++ b/ui/ui-qmp-cmds.c
+@@ -25,6 +25,9 @@
+ #include "ui/console.h"
+ #include "ui/dbus-display.h"
+ #include "ui/qemu-spice.h"
++#ifdef CONFIG_RDP
++#include "ui/qemu-rdp.h"
++#endif
+ #ifdef CONFIG_PNG
+ #include <png.h>
+ #endif
+@@ -33,6 +36,13 @@ void qmp_set_password(SetPasswordOptions *opts, Error **errp)
+ {
+     int rc;
+ 
++#ifdef CONFIG_RDP
++    if (opts->protocol == DISPLAY_PROTOCOL_RDP) {
++        qemu_rdp_set_password(opts->password, opts->connected, &opts->u.rdp,
++                              errp);
++        return;
++    }
++#endif
+     if (opts->protocol == DISPLAY_PROTOCOL_SPICE) {
+         if (!qemu_using_spice(errp)) {
+             return;
+@@ -89,6 +99,12 @@ void qmp_expire_password(ExpirePasswordOptions *opts, Error **errp)
+         when += num;
+     }
+ 
++#ifdef CONFIG_RDP
++    if (opts->protocol == DISPLAY_PROTOCOL_RDP) {
++        qemu_rdp_set_password_expiry(when, errp);
++        return;
++    }
++#endif
+     if (opts->protocol == DISPLAY_PROTOCOL_SPICE) {
+         if (!qemu_using_spice(errp)) {
+             return;
+-- 
+2.47.3
+

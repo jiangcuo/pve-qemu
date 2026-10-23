@@ -186,3 +186,6 @@ loongarch-irqchip/0036-target-loongarch-Set-msgint-property-with-auto-detec.patc
 loongarch-irqchip/0037-loongarch-adapt-in-kernel-irqchip-and-DINTC-backport.patch
 loongarch-irqchip/0038-target-loongarch-kvm-check-the-in-kernel-irqchip-ABI.patch
 loongarch-irqchip/0039-target-loongarch-kvm-resolve-msgint-auto-after-the-K.patch
+vds/0001-ui-rdp-add-the-in-process-RDP-display-backend-on-lib.patch
+vds/0002-ui-clipboard-add-PNG-images-and-share-them-over-vdag.patch
+vds/0003-ui-rdp-send-audio-from-any-audiodev-to-the-RDP-clien.patch
