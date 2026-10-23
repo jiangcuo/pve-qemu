@@ -45,6 +45,7 @@ $(BUILDDIR): submodule
 	test ! -f $(SRCDIR)/build/config.status
 	rm -rf $@.tmp $@
 	cp -a $(SRCDIR) $@.tmp
+	git -C $@.tmp clean -xdfi
 	cp -a debian $@.tmp/debian
 	rm -rf $@.tmp/roms/edk2 # packaged separately
 	rm -rf $@.tmp/pc-bios/dtb

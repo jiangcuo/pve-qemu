@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Christian Ebner <c.ebner@proxmox.com>
+Date: Mon, 17 Aug 2026 10:21:58 +0200
+Subject: [PATCH] pbs-restore: add no-cache flag to skip host page cache on
+ restore
+
+Optional flag which allows to set BDRV_O_NOCACHE on the block
+backend, skipping the host page cache while restoring.
+
+Allows to explicitly skip the page cache for cases where it can cause
+issues. The page cache is filled during restores and can cause I/O
+delay issues once page writeback starts, not only limited to VMs on
+the same pool but possibly also affecting other ZFS-backed VMs on
+certain setups, as reported in enterprise support and in the
+community forum [0].
+
+Keeping it opt-in for full backwards compatibility, allowing to only
+enable it on targets where required.
+
+[0] https://forum.proxmox.com/threads/185023/
+
+Signed-off-by: Christian Ebner <c.ebner@proxmox.com>
+---
+ pbs-restore.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/pbs-restore.c b/pbs-restore.c
+index f5e3552193..592b20f7ad 100644
+--- a/pbs-restore.c
++++ b/pbs-restore.c
+@@ -81,6 +81,7 @@ int main(int argc, char **argv)
+     const char *keyfile = NULL;
+     int verbose = false;
+     bool skip_zero = false;
++    bool no_cache = false;
+ 
+     error_init(argv[0]);
+ 
+@@ -93,6 +94,7 @@ int main(int argc, char **argv)
+             {"repository", required_argument, 0, 'r'},
+             {"ns", required_argument, 0, 'n'},
+             {"keyfile", required_argument, 0, 'k'},
++            {"no-cache", no_argument, 0, 'N'},
+             {0, 0, 0, 0}
+         };
+         int c = getopt_long(argc, argv, "hvf:r:k:", long_options, NULL);
+@@ -124,6 +126,9 @@ int main(int argc, char **argv)
+             case 'S':
+                 skip_zero = true;
+                 break;
++            case 'N':
++                no_cache = true;
++                break;
+             case 'h':
+                 help();
+                 return 0;
+@@ -198,6 +203,12 @@ int main(int argc, char **argv)
+     }
+     Error *local_err = NULL;
+     int flags = BDRV_O_RDWR;
++    if (no_cache) {
++        flags |= BDRV_O_NOCACHE;
++        if (verbose) {
++            fprintf(stderr, "skip host page cache for restore of '%s'\n", target);
++        }
++    }
+     BlockBackend *blk = blk_new_open(target, NULL, options, flags, &local_err);
+     if (!blk) {
+         fprintf(stderr, "%s\n", error_get_pretty(local_err));

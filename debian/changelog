@@ -1,3 +1,136 @@
+pve-qemu-kvm (11.1.1-2) trixie; urgency=medium
+
+  * vma: reject archive member names that are not a single path component
+    when reading an archive. Previously, extracting a crafted backup archive,
+    as done on restore, could write configuration files outside of the
+    extraction directory. Creating an archive now rejects such names too, to
+    avoid producing archives that cannot be restored.
+
+  * vma: fix out-of-bounds reads and resulting crashes when reading an
+    archive with a crafted header, for example one containing a zero-length
+    name or an invalid blob buffer location.
+
+  * backup: report the reason when adding a configuration file or disk to a
+    VMA archive fails, for example for configuration files larger than the
+    65535 bytes a VMA archive can hold per file.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 30 Sep 2026 23:14:36 +0200
+
+pve-qemu-kvm (11.1.1-1) trixie; urgency=medium
+
+  * update submodule and patches to QEMU 11.1.1.
+
+  * the glusterfs block driver is fully dropped from this QEMU version. The
+    Proxmox VE storage plugin was already removed with the release of Proxmox
+    VE 9.0.
+
+  * update supported CPU models for amd64/x86_64 adding new versions for some
+    AMD and Intel models, which add GMET/MBEC support.
+
+  * add patch to work around broken input cleanup feature in libspice-server1.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 09 Sep 2026 12:14:25 +0200
+
+pve-qemu-kvm (11.0.3-4) trixie; urgency=medium
+
+  * vma: reject archive member names that are not a single path component
+    when reading an archive. Previously, extracting a crafted backup archive,
+    as done on restore, could write configuration files outside of the
+    extraction directory.
+
+  * vma: fix out-of-bounds reads and resulting crashes when reading an
+    archive with a crafted header, for example one containing a zero-length
+    name or an invalid blob buffer location.
+
+  * savevm-async: fix leaking the state file channel and a reference to its
+    block backend each time the VM state is saved or loaded, for example for
+    snapshots including RAM or for hibernation.
+
+  * migration: fail with an error instead of possibly crashing when the
+    Proxmox Backup Server dirty bitmap state in an incoming migration stream
+    or saved VM state is corrupt.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 30 Sep 2026 22:53:48 +0200
+
+pve-qemu-kvm (11.0.3-3) trixie; urgency=medium
+
+  * pbs-restore: add an optional flag to skip the host page cache when
+    restoring a disk image. On ZFS, page writeback hands the restored data to
+    the zvol one page at a time, which forces a read-modify-write of the
+    surrounding volume block and can stall I/O of unrelated VMs for the
+    duration of the restore. qemu-server uses the new flag for restores to
+    zvols.
+
+ -- Proxmox Support Team <support@proxmox.com>  Thu, 20 Aug 2026 23:19:02 +0200
+
+pve-qemu-kvm (11.0.3-2) trixie; urgency=medium
+
+  * add fix for re-entrant DMA issue with LSI SCSI controllers
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 07 Aug 2026 11:00:10 +0200
+
+pve-qemu-kvm (11.0.3-1) trixie; urgency=medium
+
+  * update submodule and patches to QEMU 11.0.3, which brings fixes for the
+    USB, SCSI, NVMe and display device models, corrects SCSI persistent
+    reservation handling and restricts guest-facing DMA paths in the intel-hda
+    and ivshmem devices. All security and stability patches that were
+    backported for the previous release are part of this point release now and
+    could be dropped downstream.
+
+  * more stable fixes for QEMU 11.0, addressing guest-triggerable assertion
+    failures and crashes in the IDE, xHCI, USB core, SCSI disk, VMware SVGA
+    and virtio device models, a read-only export bypass and a use-after-free
+    on device removal in the 9p file sharing server, and dangling callbacks
+    left behind when unplugging a QXL display device.
+
+  * vfio: reject out-of-range PCI interrupt pins and stop mistaking a failed
+    config space read for valid all-ones data, which could abort QEMU shortly
+    after starting a VM with a passed-through GPU.
+
+ -- Proxmox Support Team <support@proxmox.com>  Mon, 27 Jul 2026 23:27:20 +0200
+
+pve-qemu-kvm (11.0.2-2) trixie; urgency=medium
+
+  * more stable fixes for QEMU 11.0, including various display drivers and the
+    USB subsystem, for virtio-net, virtio-serial, the e1000e, IDE, DMA,
+    intel_iommu, TCG and the RNG devices.
+
+ -- Proxmox Support Team <support@proxmox.com>  Tue, 21 Jul 2026 18:18:08 +0200
+
+pve-qemu-kvm (11.0.2-1) trixie; urgency=medium
+
+  * update submodule and patches to QEMU 11.0.2, which brings minor fixes for
+    x86 and ARM emulation, migration, rare block-layer edge cases and VNC
+    memory handling. The downstream stop-gap patch for the trim/drain deadlock
+    with IDE/SATA drives could be dropped, as an equivalent fix landed
+    upstream.
+
+  * fix #7722: restore PNG support, which is required for the screendump
+    feature and advertised by VNC when available. It regressed because the
+    build dependency providing PNG support was previously only pulled in
+    implicitly.
+
+  * accept newer VMware seSparse snapshot deltas that set a reserved header
+    field which stock QEMU rejects. This unblocks the ESXi live-import from
+    reading a running VM's disk over the NBD transport.
+
+  * async snapshot: allow skipping the VM start after a successful snapshot,
+    so that a hibernation snapshot can leave the guest stopped for the
+    management layer to shut it down without further guest activity.
+
+  * recognize Hyper-V enlightenments in the list of supported CPUID flags,
+    making them available for use in custom CPU models.
+
+ -- Proxmox Support Team <support@proxmox.com>  Wed, 01 Jul 2026 18:35:21 +0200
+
+pve-qemu-kvm (11.0.0-4) trixie; urgency=medium
+
+  * backport stable fixes for QEMU 11.0 to improve stability with vfio, apic,
+    lsi, virtio-blk and aio=native.
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 29 May 2026 10:39:00 +0200
+
 pve-qemu-kvm (11.0.0-3) trixie; urgency=medium
 
   * revert "qcow2: Fix corruption on discard during write with COW", needs
