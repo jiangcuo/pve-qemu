@@ -75,6 +75,7 @@ endif
 	    --enable-pa \
 	    --enable-png \
 	    --enable-rbd \
+	    --enable-rdp \
 	    --enable-seccomp \
 	    --enable-slirp \
 	    --enable-sndio \

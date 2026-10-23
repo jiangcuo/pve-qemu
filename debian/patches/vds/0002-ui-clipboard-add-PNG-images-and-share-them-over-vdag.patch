@@ -1,0 +1,319 @@
+From 05166057311d60495362a31bd2d479ff75f702c9 Mon Sep 17 00:00:00 2001
+From: Lierfang Support Team <itsupport@lierfang.com>
+Date: Fri, 23 Oct 2026 10:54:50 +0800
+Subject: [PATCH 2/3] ui/clipboard: add PNG images and share them over vdagent
+ and RDP
+
+Add QEMU_CLIPBOARD_TYPE_PNG (image/png) and map it to
+VD_AGENT_CLIPBOARD_IMAGE_PNG in qemu-vdagent, in both directions.
+The RDP clipboard bridge handles every type through one table, so PNG
+images flow between the guest agent and the RDP client (libvds
+VDS_CLIPBOARD_PNG).
+
+Raise the qemu-vdagent output buffer limit from 1 MiB to 32 MiB: a
+pasted screenshot is often several MiB and was dropped with "buffer
+full".
+
+Signed-off-by: Lierfang Support Team <itsupport@lierfang.com>
+---
+ include/ui/clipboard.h |   2 +
+ ui/rdp-clipboard.c     | 107 +++++++++++++++++++++++++++--------------
+ ui/trace-events        |   2 +-
+ ui/vdagent.c           |  14 +++++-
+ 4 files changed, 86 insertions(+), 39 deletions(-)
+
+diff --git a/include/ui/clipboard.h b/include/ui/clipboard.h
+index 62a96ce..31ef092 100644
+--- a/include/ui/clipboard.h
++++ b/include/ui/clipboard.h
+@@ -34,10 +34,12 @@ extern const VMStateDescription vmstate_cbinfo;
+  * enum QemuClipboardType
+  *
+  * @QEMU_CLIPBOARD_TYPE_TEXT: text/plain; charset=utf-8
++ * @QEMU_CLIPBOARD_TYPE_PNG: image/png
+  * @QEMU_CLIPBOARD_TYPE__COUNT: type count.
+  */
+ enum QemuClipboardType {
+     QEMU_CLIPBOARD_TYPE_TEXT,
++    QEMU_CLIPBOARD_TYPE_PNG,
+     QEMU_CLIPBOARD_TYPE__COUNT,
+ };
+ 
+diff --git a/ui/rdp-clipboard.c b/ui/rdp-clipboard.c
+index 1650d21..6b03203 100644
+--- a/ui/rdp-clipboard.c
++++ b/ui/rdp-clipboard.c
+@@ -2,8 +2,7 @@
+  * QEMU RDP server (libvds frontend): clipboard
+  *
+  * Bridges the RDP client clipboard with the QEMU clipboard (guest side:
+- * qemu-vdagent chardev + spice-vdagent). Text only, like the QEMU
+- * clipboard itself.
++ * qemu-vdagent chardev + spice-vdagent).  Text and PNG images.
+  *
+  * SPDX-License-Identifier: GPL-2.0-or-later
+  */
+@@ -13,13 +12,19 @@
+ #include "rdp.h"
+ #include "trace.h"
+ 
++/* QEMU clipboard type <-> VDS_CLIPBOARD_* */
++static const uint32_t rdp_cb_vds_type[QEMU_CLIPBOARD_TYPE__COUNT] = {
++    [QEMU_CLIPBOARD_TYPE_TEXT] = VDS_CLIPBOARD_TEXT,
++    [QEMU_CLIPBOARD_TYPE_PNG] = VDS_CLIPBOARD_PNG,
++};
++
+ static struct {
+     VdsServer *server;
+     QemuClipboardPeer peer;
+     /* Latest guest clipboard (owned by another peer). */
+     QemuClipboardInfo *guest;
+-    /* The client asked for guest text not available yet. */
+-    bool client_waiting;
++    /* Bit per QemuClipboardType: client asked for guest data not here yet. */
++    uint32_t client_waiting;
+     /* Clipboard published on behalf of the client. */
+     QemuClipboardInfo *client;
+     /*
+@@ -28,55 +33,76 @@ static struct {
+      * published to the guest again and the guest agent answers with another
+      * grab, which fills the qemu-vdagent output buffer (ui/vdagent.c).
+      */
+-    bool guest_text;
++    bool guest_any;
+     bool client_regrabbed;
+ } rdp_cb;
+ 
+-static void rdp_clipboard_send_guest_text(QemuClipboardInfo *info)
++static bool rdp_clipboard_qemu_type(uint32_t vds, QemuClipboardType *type)
+ {
+-    if (!info->types[QEMU_CLIPBOARD_TYPE_TEXT].data) {
++    QemuClipboardType t;
++
++    for (t = 0; t < QEMU_CLIPBOARD_TYPE__COUNT; t++) {
++        if (rdp_cb_vds_type[t] && rdp_cb_vds_type[t] == vds) {
++            *type = t;
++            return true;
++        }
++    }
++    return false;
++}
++
++static void rdp_clipboard_send_guest_data(QemuClipboardInfo *info,
++                                          QemuClipboardType type)
++{
++    if (!info->types[type].data) {
+         return;
+     }
+-    rdp_cb.client_waiting = false;
+-    trace_rdp_clipboard_to_client(info->types[QEMU_CLIPBOARD_TYPE_TEXT].size);
+-    vds_clipboard_data(rdp_cb.server, VDS_CLIPBOARD_TEXT,
+-                       info->types[QEMU_CLIPBOARD_TYPE_TEXT].data,
+-                       info->types[QEMU_CLIPBOARD_TYPE_TEXT].size);
++    rdp_cb.client_waiting &= ~(1u << type);
++    trace_rdp_clipboard_to_client(info->types[type].size);
++    vds_clipboard_data(rdp_cb.server, rdp_cb_vds_type[type],
++                       info->types[type].data, info->types[type].size);
+ }
+ 
+ static void rdp_clipboard_update_info(QemuClipboardInfo *info)
+ {
+-    uint32_t text = VDS_CLIPBOARD_TEXT;
++    uint32_t types[QEMU_CLIPBOARD_TYPE__COUNT];
++    uint32_t count = 0;
++    QemuClipboardType t;
+ 
+     if (info->owner == &rdp_cb.peer ||
+         info->selection != QEMU_CLIPBOARD_SELECTION_CLIPBOARD) {
+         return;
+     }
+     if (info != rdp_cb.guest) {
+-        bool available = info->types[QEMU_CLIPBOARD_TYPE_TEXT].available;
+-
++        for (t = 0; t < QEMU_CLIPBOARD_TYPE__COUNT; t++) {
++            if (rdp_cb_vds_type[t] && info->types[t].available) {
++                types[count++] = rdp_cb_vds_type[t];
++            }
++        }
+         qemu_clipboard_info_unref(rdp_cb.guest);
+         rdp_cb.guest = qemu_clipboard_info_ref(info);
+-        if (available) {
++        rdp_cb.client_waiting = 0;
++        if (count) {
+             /*
+              * The agent answers a host grab with a grab of its own.  If the
+              * client already published a grab since we last announced the
+              * guest clipboard, this is the echo of that announcement: do not
+              * bounce it back to the client, it would loop forever.
+              */
+-            if (!(rdp_cb.guest_text && rdp_cb.client_regrabbed)) {
+-                vds_clipboard_grab(rdp_cb.server, &text, 1);
++            if (!(rdp_cb.guest_any && rdp_cb.client_regrabbed)) {
++                vds_clipboard_grab(rdp_cb.server, types, count);
+             }
+         } else {
+             vds_clipboard_release(rdp_cb.server);
+         }
+-        rdp_cb.guest_text = available;
++        rdp_cb.guest_any = count > 0;
+         rdp_cb.client_regrabbed = false;
+         return;
+     }
+     /* Same info: data we asked for may have arrived. */
+-    if (rdp_cb.client_waiting) {
+-        rdp_clipboard_send_guest_text(info);
++    for (t = 0; t < QEMU_CLIPBOARD_TYPE__COUNT; t++) {
++        if (rdp_cb.client_waiting & (1u << t)) {
++            rdp_clipboard_send_guest_data(info, t);
++        }
+     }
+ }
+ 
+@@ -97,8 +123,8 @@ static void rdp_clipboard_notify(Notifier *notifier, void *data)
+ static void rdp_clipboard_request(QemuClipboardInfo *info,
+                                   QemuClipboardType type)
+ {
+-    if (type == QEMU_CLIPBOARD_TYPE_TEXT) {
+-        vds_clipboard_request(rdp_cb.server, VDS_CLIPBOARD_TEXT);
++    if (rdp_cb_vds_type[type]) {
++        vds_clipboard_request(rdp_cb.server, rdp_cb_vds_type[type]);
+     }
+ }
+ 
+@@ -114,20 +140,23 @@ void rdp_clipboard_init(VdsServer *server)
+ void rdp_clipboard_client_grab(const uint32_t *types, uint32_t count)
+ {
+     QemuClipboardInfo *info;
++    QemuClipboardType type;
+     uint32_t i;
+-    bool text = false;
+ 
+     if (!rdp_cb.server) {
+         return;
+     }
+-    for (i = 0; i < count; i++) {
+-        text |= types[i] == VDS_CLIPBOARD_TEXT;
+-    }
+-    trace_rdp_clipboard_client_grab(text);
+     rdp_cb.client_regrabbed = true;
+     info = qemu_clipboard_info_new(&rdp_cb.peer,
+                                    QEMU_CLIPBOARD_SELECTION_CLIPBOARD);
+-    info->types[QEMU_CLIPBOARD_TYPE_TEXT].available = text;
++    for (i = 0; i < count; i++) {
++        if (rdp_clipboard_qemu_type(types[i], &type)) {
++            info->types[type].available = true;
++        }
++    }
++    trace_rdp_clipboard_client_grab(
++        info->types[QEMU_CLIPBOARD_TYPE_TEXT].available,
++        info->types[QEMU_CLIPBOARD_TYPE_PNG].available);
+     qemu_clipboard_info_unref(rdp_cb.client);
+     rdp_cb.client = qemu_clipboard_info_ref(info);
+     qemu_clipboard_update(info);
+@@ -149,28 +178,32 @@ void rdp_clipboard_client_release(void)
+ void rdp_clipboard_client_request(uint32_t type)
+ {
+     QemuClipboardInfo *info = rdp_cb.guest;
++    QemuClipboardType qtype;
+ 
+-    if (!rdp_cb.server || type != VDS_CLIPBOARD_TEXT || !info ||
+-        !info->types[QEMU_CLIPBOARD_TYPE_TEXT].available) {
++    if (!rdp_cb.server || !rdp_clipboard_qemu_type(type, &qtype) || !info ||
++        !info->types[qtype].available) {
+         return;
+     }
+-    if (info->types[QEMU_CLIPBOARD_TYPE_TEXT].data) {
+-        rdp_clipboard_send_guest_text(info);
++    if (info->types[qtype].data) {
++        rdp_clipboard_send_guest_data(info, qtype);
+         return;
+     }
+-    rdp_cb.client_waiting = true;
+-    qemu_clipboard_request(info, QEMU_CLIPBOARD_TYPE_TEXT);
++    rdp_cb.client_waiting |= 1u << qtype;
++    qemu_clipboard_request(info, qtype);
+ }
+ 
+ /* Client data for a guest paste. */
+ void rdp_clipboard_client_data(uint32_t type, const uint8_t *data, size_t len)
+ {
+-    if (!rdp_cb.server || type != VDS_CLIPBOARD_TEXT || !rdp_cb.client ||
++    QemuClipboardType qtype;
++
++    if (!rdp_cb.server || !rdp_clipboard_qemu_type(type, &qtype) ||
++        !rdp_cb.client ||
+         !qemu_clipboard_peer_owns(&rdp_cb.peer,
+                                   QEMU_CLIPBOARD_SELECTION_CLIPBOARD)) {
+         return;
+     }
+     trace_rdp_clipboard_from_client(len);
+     qemu_clipboard_set_data(&rdp_cb.peer, rdp_cb.client,
+-                            QEMU_CLIPBOARD_TYPE_TEXT, len, data, true);
++                            qtype, len, data, true);
+ }
+diff --git a/ui/trace-events b/ui/trace-events
+index 44c28f1..e72128a 100644
+--- a/ui/trace-events
++++ b/ui/trace-events
+@@ -231,4 +231,4 @@ rdp_input_wheel(int32_t dx, int32_t dy) "dx=%d dy=%d"
+ # rdp-clipboard.c
+ rdp_clipboard_to_client(size_t bytes) "bytes=%zu"
+ rdp_clipboard_from_client(size_t bytes) "bytes=%zu"
+-rdp_clipboard_client_grab(int text) "text=%d"
++rdp_clipboard_client_grab(int text, int png) "text=%d png=%d"
+diff --git a/ui/vdagent.c b/ui/vdagent.c
+index b9784d4..9a4ce21 100644
+--- a/ui/vdagent.c
++++ b/ui/vdagent.c
+@@ -20,7 +20,8 @@
+ 
+ #include "spice/vd_agent.h"
+ 
+-#define VDAGENT_BUFFER_LIMIT (1 * MiB)
++/* Room for a clipboard image (PNG screenshots are often several MiB). */
++#define VDAGENT_BUFFER_LIMIT (32 * MiB)
+ #define VDAGENT_MOUSE_DEFAULT true
+ #define VDAGENT_CLIPBOARD_DEFAULT false
+ 
+@@ -315,6 +316,8 @@ static uint32_t type_qemu_to_vdagent(enum QemuClipboardType type)
+     switch (type) {
+     case QEMU_CLIPBOARD_TYPE_TEXT:
+         return VD_AGENT_CLIPBOARD_UTF8_TEXT;
++    case QEMU_CLIPBOARD_TYPE_PNG:
++        return VD_AGENT_CLIPBOARD_IMAGE_PNG;
+     default:
+         return VD_AGENT_CLIPBOARD_NONE;
+     }
+@@ -544,6 +547,9 @@ static void vdagent_clipboard_recv_grab(VDAgentChardev *vd, uint8_t s, uint32_t
+         case VD_AGENT_CLIPBOARD_UTF8_TEXT:
+             info->types[QEMU_CLIPBOARD_TYPE_TEXT].available = true;
+             break;
++        case VD_AGENT_CLIPBOARD_IMAGE_PNG:
++            info->types[QEMU_CLIPBOARD_TYPE_PNG].available = true;
++            break;
+         default:
+             break;
+         }
+@@ -565,6 +571,9 @@ static void vdagent_clipboard_recv_request(VDAgentChardev *vd, uint8_t s, uint32
+     case VD_AGENT_CLIPBOARD_UTF8_TEXT:
+         type = QEMU_CLIPBOARD_TYPE_TEXT;
+         break;
++    case VD_AGENT_CLIPBOARD_IMAGE_PNG:
++        type = QEMU_CLIPBOARD_TYPE_PNG;
++        break;
+     default:
+         return;
+     }
+@@ -593,6 +602,9 @@ static void vdagent_clipboard_recv_data(VDAgentChardev *vd, uint8_t s, uint32_t
+     case VD_AGENT_CLIPBOARD_UTF8_TEXT:
+         type = QEMU_CLIPBOARD_TYPE_TEXT;
+         break;
++    case VD_AGENT_CLIPBOARD_IMAGE_PNG:
++        type = QEMU_CLIPBOARD_TYPE_PNG;
++        break;
+     default:
+         return;
+     }
+-- 
+2.47.3
+

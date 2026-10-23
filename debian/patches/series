@@ -69,3 +69,6 @@ pve/0051-PVE-backup-vma-writer-restrict-allowed-archive-membe.patch
 pve/0052-PVE-backup-vma-fix-checking-for-error-from-registeri.patch
 pve/0053-PVE-backup-vma-report-errors-from-writer-at-cleanup-.patch
 pve/0054-PVE-backup-vma-report-why-adding-a-config-or-device-.patch
+vds/0001-ui-rdp-add-the-in-process-RDP-display-backend-on-lib.patch
+vds/0002-ui-clipboard-add-PNG-images-and-share-them-over-vdag.patch
+vds/0003-ui-rdp-send-audio-from-any-audiodev-to-the-RDP-clien.patch
