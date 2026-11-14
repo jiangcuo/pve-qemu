@@ -10,12 +10,16 @@ HOST_CPU ?= $(DEB_HOST_GNU_CPU)
 
 PACKAGE=pve-qemu-kvm
 destdir := $(CURDIR)/debian/$(PACKAGE)
+USER_PACKAGE=pve-qemu-user
+userdestdir := $(CURDIR)/debian/$(USER_PACKAGE)
 
 flagfile := $(destdir)/usr/share/kvm/recognized-CPUID-flags-x86_64
 machinefile := $(destdir)/usr/share/kvm/machine-versions.json
 
 # default QEMU out-of-tree build directory is ./build
 BUILDDIR=build
+# statically linked linux-user emulators are built separately
+USER_BUILDDIR=build-user
 
 # FIXME: pass to configure as --extra-cflags=CFLAGS ?! also LDFLAGS?
 CFLAGS += -Wall -L/usr/lib/$(DEB_HOST_GNU_CPU)-linux-gnu
@@ -64,6 +68,7 @@ endif
 	    --disable-sdl \
 	    --disable-smartcard \
 	    --disable-strip \
+	    --disable-user \
 	    --disable-xen \
 	    --enable-curl \
 	    --enable-docs \
@@ -85,16 +90,34 @@ endif
 	    --enable-zstd \
 		$(CROSS_COMPILE)
 
+${USER_BUILDDIR}/config.status: configure
+	dh_testdir
+	mkdir -p ${USER_BUILDDIR}
+	cd ${USER_BUILDDIR} && ../configure \
+	    --disable-download \
+	    --prefix=/usr \
+	    --with-pkgversion="${DEB_SOURCE}_${DEB_VERSION_UPSTREAM_REVISION}" \
+	    --without-default-features \
+	    --disable-docs \
+	    --disable-install-blobs \
+	    --disable-strip \
+	    --disable-system \
+	    --disable-tools \
+	    --enable-linux-user \
+	    --static \
+		$(CROSS_COMPILE)
+
 build: build-arch build-indep
 build-arch: build-stamp
 build-indep: build-stamp
 build: build-stamp
 
-build-stamp: ${BUILDDIR}/config.status
+build-stamp: ${BUILDDIR}/config.status ${USER_BUILDDIR}/config.status
 	dh_testdir
 
 	# Add here commands to compile the package.
 	$(MAKE)
+	$(MAKE) -C ${USER_BUILDDIR}
 
 	#docbook-to-man debian/kvm.sgml > kvm.1
 
@@ -107,6 +130,7 @@ clean:
 
 	# Add here commands to clean up before the build process.
 	-$(MAKE) distclean
+	rm -rf ${USER_BUILDDIR}
 
 	dh_clean
 
@@ -132,6 +156,22 @@ install: build
 	$(destdir)/usr/bin/qemu-system-aarch64 -machine help >> $(CURDIR)/machine.list
 	cat $(CURDIR)/machine.list | ./debian/parse-machines.pl > $(machinefile)
 
+	# linux-user emulators, registered via systemd-binfmt for foreign targets
+	$(MAKE) -C ${USER_BUILDDIR} DESTDIR=$(userdestdir) install
+	rm -Rf $(userdestdir)/usr/share/qemu
+	mkdir -p $(userdestdir)/usr/lib/binfmt.d
+	HOST_ARCH=$(DEB_HOST_GNU_CPU) ./scripts/qemu-binfmt-conf.sh \
+	    --systemd ALL \
+	    --exportdir $(userdestdir)/usr/lib/binfmt.d \
+	    --qemu-path /usr/bin \
+	    --persistent yes \
+	    --preserve-argv0 yes
+	# drop registrations for targets without an emulator binary
+	for conf in $(userdestdir)/usr/lib/binfmt.d/qemu-*.conf; do \
+	    bin=$$(sed -n 's/^:[^:]*:M::[^:]*:[^:]*:\([^:]*\):.*$$/\1/p' $$conf); \
+	    test -x $(userdestdir)$$bin || rm -f $$conf; \
+	done
+
 # Build architecture-independent files here.
 binary-indep: build install
 # We have nothing to do by default.
@@ -156,7 +196,8 @@ binary-arch: build install
 #	dh_installinfo
 	dh_installman
 	dh_link
-	dh_strip --dbgsym-migration='pve-qemu-kvm-dbg (<<8.0.0-1~)'
+	dh_strip -p$(PACKAGE) --dbgsym-migration='pve-qemu-kvm-dbg (<<8.0.0-1~)'
+	dh_strip -p$(USER_PACKAGE)
 	dh_compress
 	dh_fixperms
 #	dh_perl
