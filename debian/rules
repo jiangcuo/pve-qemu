@@ -81,6 +81,7 @@ endif
 	    --enable-numa \
 	    --enable-opengl \
 	    --enable-rbd \
+	    --enable-rdp \
 	    --enable-seccomp \
 	    --enable-slirp \
 	    --enable-spice \

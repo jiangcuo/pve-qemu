@@ -81,3 +81,9 @@ pve/0057-block-zeroinit-support-using-as-blockdev-driver.patch
 pve/0058-block-alloc-track-support-using-as-blockdev-driver.patch
 pve/0059-block-qapi-include-child-references-in-block-device-.patch
 pve/0060-savevm-async-reuse-migration-blocker-check-for-snaps.patch
+vds/0001-ui-rdp-add-the-in-process-RDP-display-backend-on-lib.patch
+vds/0002-ui-clipboard-add-PNG-images-and-share-them-over-vdag.patch
+vds/0003-ui-rdp-send-audio-from-any-audiodev-to-the-RDP-clien.patch
+vds/0004-ui-rdp-take-the-TLS-certificate-from-files-report-it.patch
+vds/0005-ui-rdp-hand-GL-scanouts-to-libvds-as-dmabufs-share-t.patch
+vds/0006-ui-rdp-stay-quiet-while-all-goes-well.patch

@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: jiangcuo <jiangcuo@bingsin.com>
+Date: Sun, 15 Nov 2026 23:22:30 +0800
+Subject: [PATCH 6/6] ui/rdp: stay quiet while all goes well
+
+Other displays print nothing on stderr when they start or when clients
+come and go. Do the same:
+
+- default the libvds log filter to "warn" (log= still overrides it), so
+  lifecycle events such as listening or a client connecting are no
+  longer logged;
+- drop the warning about a missing password-secret: the password is
+  commonly set later with set_password, as for VNC;
+- turn the informational GL messages (the EGL context in use, frames
+  read back or passed as dmabufs) into trace events.
+
+Signed-off-by: jiangcuo <jiangcuo@bingsin.com>
+---
+ qemu-options.hx | 3 ++-
+ ui/rdp-core.c   | 9 +++------
+ ui/rdp-gl.c     | 6 ++----
+ ui/trace-events | 3 +++
+ 4 files changed, 10 insertions(+), 11 deletions(-)
+
+diff --git a/qemu-options.hx b/qemu-options.hx
+index 17e87ce2d7..8de17235d7 100644
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -2436,7 +2436,8 @@ SRST
+ 
+     ``log=<filter>``; \ ``log-format=text|json``
+         libvds log filter (e.g. ``info,vds_rdp=debug``) and format.
+-        Logs are written to stderr.
++        Logs are written to stderr. The default filter is ``warn``: nothing
++        is logged while all goes well.
+ ERST
+ 
+ #ifdef CONFIG_SPICE
+diff --git a/ui/rdp-core.c b/ui/rdp-core.c
+index c7ca873072..9f962aac97 100644
+--- a/ui/rdp-core.c
++++ b/ui/rdp-core.c
+@@ -153,8 +153,7 @@ void qemu_rdp_early_init(void)
+     }
+     rdp.gl = rdp_gl_registered;
+     rdp.gl_render_node = node ? g_strdup(node) : rdp.gl->render_node();
+-    info_report("rdp: GL consoles use the EGL context on %s",
+-                rdp.gl_render_node ?: "the default render node");
++    trace_rdp_gl_init(rdp.gl_render_node ?: "default");
+ }
+ 
+ VdsServer *qemu_rdp_server(void)
+@@ -512,7 +511,8 @@ void qemu_rdp_init(Error **errp)
+         return;
+     }
+ 
+-    log_cfg.filter = qemu_opt_get(opts, "log");
++    /* Quiet unless something goes wrong, as other displays are. */
++    log_cfg.filter = qemu_opt_get(opts, "log") ?: "warn";
+     str = qemu_opt_get(opts, "log-format");
+     if (!str) {
+         log_cfg.format = VDS_LOG_FORMAT_DEFAULT;
+@@ -620,9 +620,6 @@ void qemu_rdp_init(Error **errp)
+             rdp_error_take(errp, vds_err, "cannot set the password");
+             return;
+         }
+-    } else if (cfg.auth != VDS_AUTH_NONE) {
+-        warn_report("rdp: no password-secret, clients are refused until "
+-                    "set_password is used");
+     }
+ 
+     rdp_input_init();
+diff --git a/ui/rdp-gl.c b/ui/rdp-gl.c
+index 2021e54bee..227e460bf9 100644
+--- a/ui/rdp-gl.c
++++ b/ui/rdp-gl.c
+@@ -113,8 +113,7 @@ static void rdp_gl_set_reason(RdpDisplay *rd, const char *reason)
+ 
+     if (g_strcmp0(gl->reason, reason)) {
+         if (reason) {
+-            info_report("rdp: display %u: GL frames are read back: %s",
+-                        rd->index, reason);
++            trace_rdp_gl_readback_reason(rd->index, reason);
+         }
+         g_free(gl->reason);
+         gl->reason = g_strdup(reason);
+@@ -270,8 +269,7 @@ static bool rdp_gl_try_dmabuf(RdpDisplay *rd)
+     if (rc == VDS_OK) {
+         gl->failures = 0;
+         if (gl->reason) {
+-            info_report("rdp: display %u: GL frames go to libvds as dmabufs",
+-                        rd->index);
++            trace_rdp_gl_dmabuf(rd->index);
+         }
+         g_free(gl->reason);
+         gl->reason = NULL;
+diff --git a/ui/trace-events b/ui/trace-events
+index e6e87620c7..96206b0fd4 100644
+--- a/ui/trace-events
++++ b/ui/trace-events
+@@ -175,6 +175,7 @@ egl_init_d3d11_device(void *p) "d3d device: %p"
+ rdp_listen(const char *host, int port) "host=%s port=%d"
+ rdp_client_state(uint64_t sid, const char *peer, uint32_t state) "sid=%" PRIu64 " peer=%s state=%u"
+ rdp_input_unicode_ignored(int down) "down=%d"
++rdp_gl_init(const char *render_node) "render_node=%s"
+ 
+ # rdp-display.c
+ rdp_display_refresh(uint32_t head, bool active, bool wanted, uint64_t interval_ms) "head=%u active=%d wanted=%d interval_ms=%" PRIu64
+@@ -189,6 +190,8 @@ rdp_display_head_input(uint32_t head, bool cpu, const char *reason) "head=%u cpu
+ rdp_gl_scanout(uint32_t head, uint32_t w, uint32_t h, uint32_t fourcc, uint64_t modifier, bool y0_top, const char *input) "head=%u w=%u h=%u fourcc=0x%x modifier=0x%" PRIx64 " y0_top=%d input=%s"
+ rdp_gl_update(uint32_t head, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const char *input) "head=%u x=%u y=%u w=%u h=%u input=%s"
+ rdp_gl_readback(uint32_t head, uint32_t rects, uint64_t us) "head=%u rects=%u us=%" PRIu64
++rdp_gl_readback_reason(uint32_t head, const char *reason) "head=%u reason=%s"
++rdp_gl_dmabuf(uint32_t head) "head=%u"
+ 
+ # rdp-input.c
+ rdp_input_lock_sync(int scroll, int num, int caps, int leds) "scroll=%d num=%d caps=%d leds=0x%x"
